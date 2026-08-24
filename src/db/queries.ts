@@ -183,6 +183,15 @@ export function listNews(env: Env, limit = 20, offset = 0): Promise<D1Result<New
     .all<NewsRow>();
 }
 
+// X(旧Twitter)への日次まとめ投稿用。published_at(UTC ISO文字列)がstartIso以上endIso未満のものを返す。
+export function listNewsByPublishedRange(env: Env, startIso: string, endIso: string): Promise<D1Result<NewsRow>> {
+  return env.DB.prepare(
+    "SELECT * FROM news WHERE published_at >= ? AND published_at < ? ORDER BY published_at ASC, id ASC"
+  )
+    .bind(startIso, endIso)
+    .all<NewsRow>();
+}
+
 export function listNewsByCategory(env: Env, category: string, limit = 50): Promise<D1Result<NewsRow>> {
   return env.DB.prepare("SELECT * FROM news WHERE category = ? ORDER BY published_at DESC, id DESC LIMIT ?")
     .bind(category, limit)

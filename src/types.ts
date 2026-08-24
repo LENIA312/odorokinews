@@ -10,6 +10,13 @@ export interface Env {
   // wrangler secret put ADMIN_TOKEN で設定する任意のシークレット。
   // 未設定の場合、手動シミュレーション実行エンドポイントは無効化される。
   ADMIN_TOKEN?: string;
+
+  // X(旧Twitter)への日次まとめ投稿用（wrangler secret putで設定、任意）。
+  // 4つとも揃っていない場合、投稿はスキップされる（src/social/xClient.ts）。
+  X_API_KEY?: string;
+  X_API_KEY_SECRET?: string;
+  X_ACCESS_TOKEN?: string;
+  X_ACCESS_TOKEN_SECRET?: string;
 }
 
 export interface WorldRow {

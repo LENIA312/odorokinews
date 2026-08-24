@@ -33,6 +33,25 @@ async function callChatModel(
   throw new Error("Workers AIから予期しない形式のレスポンスが返された");
 }
 
+/**
+ * AIに自由文での出力を依頼する（JSON構造を要求しない版）。
+ * X投稿の日次まとめのように、短い自然文だけが欲しい用途向け。
+ */
+export async function callAiForText(
+  env: Env,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  maxTokens = 200
+): Promise<AiCallResult> {
+  try {
+    const raw = await callChatModel(env, model, systemPrompt, userPrompt, maxTokens);
+    return { ok: true, raw: raw.trim() };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** レスポンス文字列から最初のJSONオブジェクトを抽出してパースする。 */
 function extractJson(text: string): unknown {
   const start = text.indexOf("{");

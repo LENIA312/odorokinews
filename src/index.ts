@@ -86,6 +86,7 @@ import {
   orgZoneId,
 } from "./views/mapZones";
 import { runDailySimulation } from "./simulation/runDailySimulation";
+import { postDailyNewsDigest } from "./social/dailyDigest";
 import { findDueSlot, nextSlotUtcMillis, parseAutoPublishTimes } from "./simulation/schedule";
 import { callAiForJson } from "./simulation/ai";
 import { buildEventPrompt, buildNewsPrompt } from "./simulation/prompts";
@@ -363,6 +364,18 @@ app.post("/api/admin/simulate", async (c) => {
   if (authError) return authError;
   try {
     const result = await runDailySimulation(c.env);
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// X(旧Twitter)への日次まとめ投稿を、Cronを待たずに手動で試すためのボタン用。
+app.post("/api/admin/social/tweet-digest", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  try {
+    const result = await postDailyNewsDigest(c.env);
     return c.json(result);
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -1554,7 +1567,15 @@ export default {
   // 10分おきに呼ばれる。world.auto_publish_times(JST)で設定された時刻を
   // まだ過ぎていなければ何もしない。管理画面から設定を変更すれば、
   // 再デプロイなしに配信時刻を変えられる。
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (event.cron === "0 23 * * *") {
+      ctx.waitUntil(
+        postDailyNewsDigest(env).catch((err) => {
+          console.error("daily news digest tweet failed", err);
+        })
+      );
+      return;
+    }
     ctx.waitUntil(
       (async () => {
         const world = await getWorld(env);

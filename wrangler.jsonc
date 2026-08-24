@@ -9,12 +9,13 @@
     "enabled": true
   },
 
-  // 10分おきに「配信すべき時刻か」をチェックするだけのCron。
-  // 実際の配信時刻(JST)はDB側(world.auto_publish_times)で管理し、
-  // 管理画面から再デプロイなしに変更できるようにしている。
-  // 1回の配信につき世界の日付が1日進む。
+  // 2本のCronを併用する（index.tsのscheduled()内でevent.cronの値により処理を振り分ける）。
+  // - "*/10 * * * *": 10分おきに「配信すべき時刻か」をチェックするだけ。実際の配信時刻(JST)は
+  //   DB側(world.auto_publish_times)で管理し、管理画面から再デプロイなしに変更できる。
+  //   1回の配信につき世界の日付が1日進む。
+  // - "0 23 * * *": 毎日08:00 JST(=23:00 UTC)に、前日分のニュースをXへ日次まとめ投稿する。
   "triggers": {
-    "crons": ["*/10 * * * *"]
+    "crons": ["*/10 * * * *", "0 23 * * *"]
   },
 
   // D1: `wrangler d1 create odorokinews-db` を実行し、
@@ -44,4 +45,8 @@
 
   // ADMIN_TOKEN（手動シミュレーション実行用のシークレット）は
   // `wrangler secret put ADMIN_TOKEN` で設定してください（任意）。
+  //
+  // X(旧Twitter)への日次まとめ投稿を使う場合、以下4つも
+  // `wrangler secret put <name>` で設定してください（任意・4つ揃わないと投稿はスキップされる）。
+  // X_API_KEY / X_API_KEY_SECRET / X_ACCESS_TOKEN / X_ACCESS_TOKEN_SECRET
 }

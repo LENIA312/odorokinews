@@ -27,7 +27,8 @@
 11. [環境変数・シークレット・設定値](#11-環境変数シークレット設定値)
 12. [運用コマンド](#12-運用コマンド)
 13. [既知の制約・スコープ外](#13-既知の制約スコープ外)
-14. [更新履歴](#14-更新履歴)
+14. [X（旧Twitter）への日次まとめ投稿](#14-x旧twitterへの日次まとめ投稿)
+15. [更新履歴](#15-更新履歴)
 
 ---
 
@@ -101,6 +102,9 @@ src/
     stateChanges.ts              state_changes配列を実際にDBへ適用する共通処理
     fallback.ts                  AI失敗時に使うテンプレートベースのイベント/記事生成
     schedule.ts                  自動配信時刻(JST)の判定ロジック
+  social/
+    dailyDigest.ts               X日次まとめ投稿の本体（対象記事の取得・AI要約・文字数管理、14章）
+    xClient.ts                   X API v2投稿用のOAuth 1.0a署名生成（crypto.subtleのみで実装）
   views/                       サーバーサイドHTMLテンプレート（ページ単位）
     layout.ts                    共通レイアウト（ヘッダー・時計・ナビ・フッター）
     admin.ts                     管理画面(/admin)全体（HTML+CSS+クライアントJSをすべて1ファイルで生成）
@@ -810,11 +814,15 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 | POST/PUT | `/api/admin/organizations` `/organizations/:id` | 企業の新規作成/編集 |
 | POST | `/api/admin/economy/stock` | 株価の個別更新 |
 | PUT | `/api/admin/economy/price-index` | 物価指数の更新 |
+| POST | `/api/admin/social/tweet-digest` | X日次まとめ投稿をCronを待たずに即時実行（14章） |
 
 ### Cron
 
-`scheduled()`（`src/index.ts`）が10分おきに呼ばれ、`findDueSlot()`が配信すべき枠を返した場合のみ
-`runDailySimulation()`を実行する（5.2節）。
+`scheduled()`（`src/index.ts`）は2種類のCronを`event.cron`の値で振り分ける:
+
+- `*/10 * * * *`: 10分おきに呼ばれ、`findDueSlot()`が配信すべき枠を返した場合のみ
+  `runDailySimulation()`を実行する（5.2節）。
+- `0 23 * * *`（=08:00 JST）: 毎日1回、`postDailyNewsDigest()`を実行しXへ日次まとめを投稿する（14章）。
 
 ---
 
@@ -866,6 +874,7 @@ TypeScriptのコンパイル（`tsc --noEmit`）は文字列配列の中身ま�
 | 変数 | 説明 |
 |---|---|
 | `ADMIN_TOKEN` | 管理画面API認証用。未設定なら管理系エンドポイントは404 |
+| `X_API_KEY` / `X_API_KEY_SECRET` / `X_ACCESS_TOKEN` / `X_ACCESS_TOKEN_SECRET` | X(旧Twitter)への日次まとめ投稿用（OAuth 1.0a）。4つとも設定されている場合のみ投稿する。14章参照 |
 
 バインディング:
 
@@ -874,7 +883,8 @@ TypeScriptのコンパイル（`tsc --noEmit`）は文字列配列の中身ま�
 | `DB` | D1 Database | `odorokinews-db`（database_id は `wrangler.jsonc` 参照） |
 | `AI` | Workers AI | 常にリモート実行 |
 
-Cronトリガー: `*/10 * * * *`（実際の配信頻度はDB側の`world.auto_publish_times`で管理、5.2節参照）。
+Cronトリガー: `*/10 * * * *`（実際の配信頻度はDB側の`world.auto_publish_times`で管理、5.2節参照）+
+`0 23 * * *`（=08:00 JST、X日次まとめ投稿。14章参照）。
 
 ---
 
@@ -920,10 +930,71 @@ npm run tail
   家系図表示も直接の関係（親・子・兄弟姉妹・配偶者）のみで、祖父母・孫までは辿らない。
 - 経済シミュレーションは簡易的（株価のクランプ付きランダム変動+AI提案のみ、需給モデル等は無い）。
 - 住民1,000人規模の日次シミュレーションや複数ニュース媒体など、`docs.md`記載の将来拡張の多くは未着手。
+- X投稿（14章）はOAuth 1.0aの4シークレットが未設定だと黙ってスキップされる（管理画面の
+  「今すぐ投稿をテスト」ボタンを押すと`reason`欄でスキップ理由が確認できる）。投稿失敗時の
+  リトライは無く、次のCron発火（翌日08:00 JST）まで待つ以外の自動復旧手段は無い。
 
 ---
 
-## 14. 更新履歴
+## 14. X（旧Twitter）への日次まとめ投稿
+
+毎日08:00(JST)に、前日(JSTの暦日)に公開されたニュースをAIで1〜2文に要約し、ニュース一覧ページ
+（`/news`）へのリンクを添えてXへ自動投稿する。実装は`src/social/`配下に集約している。
+
+### 14.1 全体フロー
+
+`scheduled()`（`src/index.ts`、9章のCron節参照）が`0 23 * * *`（=08:00 JST）で発火すると
+`postDailyNewsDigest(env)`（`src/social/dailyDigest.ts`）を呼ぶ。管理画面「設定」タブの
+「今すぐ投稿をテスト」ボタン（`POST /api/admin/social/tweet-digest`）からも同じ関数を
+Cronを待たずに即時実行できる。
+
+1. `computeYesterdayJstRangeUtc()`で「昨日」をJSTの暦日として計算し、対応するUTC範囲を求める
+   （Workersの`new Date()`は常にUTCなので、9時間を足し引きしてJSTの日付境界を求める。
+   `formatDateTimeJa`（4.2節）と同じ「UTCゲッターでJST時刻を読む」トリックを使う）。
+2. `listNewsByPublishedRange()`（`db/queries.ts`）で`news.published_at`がその範囲内の記事を取得。
+   0件ならその日は投稿しない（`posted: false`を返すだけで、エラー扱いにはしない）。
+3. 記事タイトル一覧（最大20件、カテゴリ付き）をAI（`env.AI_NEWS_MODEL`、`callAiForText`＝
+   JSON構造を要求しない自由文版。`simulation/ai.ts`に新設）に渡し、1〜2文の紹介文を生成させる。
+   AI呼び出し失敗時は`buildFallbackSummary()`（記事タイトルを「、」で連結するだけの機械的な
+   代替文）にフォールバックする。
+4. `【モーゼン・クロニクル】{日付}のニュースまとめ\n{要約}\n\n{SITE_URL}/news`の形でツイート本文を
+   組み立てる。`SITE_URL`は`constants.ts`に定義（カスタムドメインを設定したらここだけ変更すればよい）。
+5. `postTweet()`（`src/social/xClient.ts`）でX API v2 `POST /2/tweets`へ投稿。
+
+### 14.2 文字数管理（X独自の重み付けルール）
+
+Xは「ラテン文字系以外の言語（日本語含む）」を1文字＝2カウント、URLは実際の長さに関わらず
+常にt.co短縮後の23文字として数える。`weightedLength()`/`truncateToWeight()`
+（`dailyDigest.ts`）でこの近似ルールを実装し、AI要約が長すぎる場合は文字単位で安全に切り詰めて
+末尾に「…」を付ける（正規表現の仕様を完全再現したものではなく、安全側＝やや厳しめに280を
+超えないよう見積もる設計）。
+
+### 14.3 X API認証（OAuth 1.0a、`xClient.ts`）
+
+X API v2の`POST /2/tweets`はOAuth 1.0aのユーザーコンテキスト認証を要求する（アプリのみの
+Bearerトークンでは投稿できない）。外部OAuthライブラリは使わず、Workers runtimeの
+`crypto.subtle`（HMAC-SHA1）だけで署名を組み立てている。必要な4つの値は
+[developer.x.com](https://developer.x.com/)でAppを作成し「Read and Write」権限にした上で
+発行する:
+
+- `X_API_KEY` / `X_API_KEY_SECRET`（App単位のConsumer Keys）
+- `X_ACCESS_TOKEN` / `X_ACCESS_TOKEN_SECRET`（投稿するアカウントのUser Access Tokens）
+
+いずれも`wrangler secret put <name>`で設定する（ローカル動作確認用には`.dev.vars`に平文で
+置いてよい）。4つのうち1つでも未設定なら`getXCredentials()`が`null`を返し、投稿処理自体を
+スキップする（エラーにはせず`posted: false`と理由を返すだけ）。リクエストボディはJSON
+（`x-www-form-urlencoded`ではない）なので、OAuth署名のベース文字列にはOAuthパラメータのみを
+含め、ボディの中身は署名対象に含めない点に注意（OAuth 1.0aの仕様上、フォームエンコードされた
+ボディだけが署名対象になる）。
+
+### 14.4 管理画面
+
+「設定」タブに専用パネルを追加し、「今すぐ投稿をテスト」ボタンから`postDailyNewsDigest()`を
+即時実行できる（8章）。結果（投稿の成否・投稿本文・要約対象件数）をそのままメッセージ欄に表示する。
+
+---
+
+## 15. 更新履歴
 
 このセクションは機能追加・変更のたびに1行ずつ追記する（詳細は各章を参照）。
 
@@ -964,3 +1035,11 @@ npm run tail
   方針）。ニュースの「掲載」時刻が実際のJST時刻よりちょうど9時間早く表示されるバグを修正
   （`formatDateTimeJa`がUTCの`published_at`をそのままUTCゲッターで表示していたため。4.2節に
   教訓を記載）。
+- 2026-08-25: 毎朝08:00(JST)に前日分のニュースをAIで要約し、`/news`へのリンクを添えてX(旧Twitter)
+  へ自動投稿する機能を追加（14章、`src/social/`配下に新設）。X API v2の投稿にはOAuth 1.0a
+  ユーザーコンテキスト認証が必要なため、外部ライブラリを使わず`crypto.subtle`のみで署名を
+  自前実装（`xClient.ts`）。Xの「日本語は2文字カウント・URLは常に23文字」という文字数ルールを
+  近似する`weightedLength`/`truncateToWeight`を実装し、AI要約が長すぎる場合も280字を超えないよう
+  安全に切り詰める。Cronを`0 23 * * *`（=08:00 JST）を追加し2本立てに（`event.cron`で振り分け）、
+  管理画面「設定」タブにCronを待たず即時投稿を試せるボタンを追加。認証情報4つ
+  （`X_API_KEY`等）が未設定の場合は投稿を静かにスキップする設計。
