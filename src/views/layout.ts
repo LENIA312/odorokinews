@@ -242,15 +242,15 @@ export function page(opts: { title: string; activePath: string; worldbar?: RawHt
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${opts.title} | odorokinews</title>
-  <meta name="description" content="架空世界モーゼン・アングラの出来事を報じるニュースサイト odorokinews" />
+  <title>${opts.title} | モーゼン・クロニクル</title>
+  <meta name="description" content="架空世界モーゼン・アングラの出来事を報じるニュースサイト モーゼン・クロニクル" />
   <style>${raw(STYLE)}</style>
 </head>
 <body>
   <header class="site">
     <div class="masthead">
       <div class="kicker">MOSE'N UNGRA CHRONICLE</div>
-      <h1><a href="/" style="color:inherit">odorokinews</a></h1>
+      <h1><a href="/" style="color:inherit">モーゼン・クロニクル</a></h1>
       <div class="sub">架空世界「モーゼン・アングラ」で実際に起きた出来事を報じる</div>
     </div>
     <nav class="site">${raw(nav)}</nav>
@@ -260,7 +260,7 @@ export function page(opts: { title: string; activePath: string; worldbar?: RawHt
     ${opts.body}
   </main>
   <footer class="site">
-    odorokinews は架空世界シミュレーションシステムです。登場する人物・企業・出来事はすべて架空であり、実在するものとは関係ありません。
+    モーゼン・クロニクルは架空世界シミュレーションシステムです。登場する人物・企業・出来事はすべて架空であり、実在するものとは関係ありません。
   </footer>
 </body>
 </html>`;

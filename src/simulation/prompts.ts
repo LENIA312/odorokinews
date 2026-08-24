@@ -72,7 +72,7 @@ JSONのみを出力してください。`;
   return { system: EVENT_SYSTEM_PROMPT, user };
 }
 
-const NEWS_SYSTEM_PROMPT = `あなたは架空世界の報道機関「odorokinews」の記者AIです。
+const NEWS_SYSTEM_PROMPT = `あなたは架空世界の報道機関「モーゼン・クロニクル」の記者AIです。
 与えられた「出来事の事実」だけを根拠に、まじめな新聞・ニュース記事風の日本語記事を書いてください。
 
 厳守事項:

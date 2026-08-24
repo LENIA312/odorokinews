@@ -10,7 +10,7 @@ export function adminDashboardPage(): string {
     "<head>\n" +
     '<meta charset="utf-8" />\n' +
     '<meta name="viewport" content="width=device-width, initial-scale=1" />\n' +
-    "<title>管理画面 | odorokinews</title>\n" +
+    "<title>管理画面 | モーゼン・クロニクル</title>\n" +
     '<meta name="robots" content="noindex" />\n' +
     "<style>\n" +
     STYLE +
@@ -60,7 +60,7 @@ const STYLE = [
 
 const HTML_BODY = [
   '<div class="wrap">',
-  "<h1>odorokinews 管理画面</h1>",
+  "<h1>モーゼン・クロニクル 管理画面</h1>",
   '<div class="sub">世界の進行状況をリアルタイムに近い形で監視し、手動でニュース生成を行えます。</div>',
 
   '<div class="panel" id="loginPanel">',
