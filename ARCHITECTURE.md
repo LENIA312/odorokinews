@@ -35,7 +35,10 @@
 ## 1. 概要・コンセプト
 
 **モーゼン・クロニクル**（旧称 odorokinews）は、架空世界「**モーゼン・アングラ**」を舞台にしたニュースサイト。
-公開URL: `https://odoroki.pisorium.com`（Cloudflare Workers の `*.workers.dev` でも到達可能）。
+公開URL: `https://mosen-chronicle.pisorium.com`（カスタムドメイン、2026-08-25〜。Cloudflare Workers の
+`https://odorokinews.pisorium.workers.dev` でも到達可能）。カスタムドメインはCloudflareダッシュボード側の
+設定で、`wrangler.jsonc`に`routes`は無い。外部へURLを提示するコード（X投稿等、14章）は
+`constants.ts`の`SITE_URL`を参照しており、ドメインを変更した場合はそこだけ書き換えればよい。
 GitHubリポジトリ: `https://github.com/LENIA312/odorokinews`（public）。
 
 コアコンセプトは「AIがニュースを創作する」のではなく、
@@ -1043,3 +1046,5 @@ Bearerトークンでは投稿できない）。外部OAuthライブラリは使
   安全に切り詰める。Cronを`0 23 * * *`（=08:00 JST）を追加し2本立てに（`event.cron`で振り分け）、
   管理画面「設定」タブにCronを待たず即時投稿を試せるボタンを追加。認証情報4つ
   （`X_API_KEY`等）が未設定の場合は投稿を静かにスキップする設計。
+- 2026-08-25: カスタムドメインを`https://mosen-chronicle.pisorium.com`に変更（1章）。
+  `constants.ts`の`SITE_URL`をこの新ドメインに更新（X日次まとめ投稿のリンク先等で使用、14章）。

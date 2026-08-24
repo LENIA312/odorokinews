@@ -1,8 +1,8 @@
 // サイト全体で共有する定数。追加・変更はここだけで管理する。
 
 // X(旧Twitter)への日次まとめ投稿など、外部に絶対URLを提示する必要がある箇所で使う。
-// カスタムドメインを設定した場合はここだけ変更すればよい。
-export const SITE_URL = "https://odorokinews.pisorium.workers.dev";
+// カスタムドメインを変更した場合はここだけ書き換えればよい。
+export const SITE_URL = "https://mosen-chronicle.pisorium.com";
 
 export const NEWS_CATEGORIES = ["社会", "経済", "政治", "事故", "文化", "科学", "魔法", "スポーツ"] as const;
 export type NewsCategory = (typeof NEWS_CATEGORIES)[number];
