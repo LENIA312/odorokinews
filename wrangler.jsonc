@@ -1,0 +1,45 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "odorokinews",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "observability": {
+    "enabled": true
+  },
+
+  // 世界の進行はCronで1日1回実行する（毎日 00:10 UTC）。
+  // 頻度・時刻は将来変更できるよう、ここだけで管理する。
+  "triggers": {
+    "crons": ["10 0 * * *"]
+  },
+
+  // D1: `wrangler d1 create odorokinews-db` を実行し、
+  // 出力された database_id を下記に設定してください。
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "odorokinews-db",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "./migrations"
+    }
+  ],
+
+  // Workers AI（常にリモート実行）
+  "ai": {
+    "binding": "AI"
+  },
+
+  // モデル名・上限値はコードにハードコードせず、ここで管理する。
+  // 将来モデルが変わった場合はここだけを書き換えれば良い。
+  "vars": {
+    "ENVIRONMENT": "production",
+    "AI_EVENT_MODEL": "@cf/meta/llama-3.1-8b-instruct",
+    "AI_NEWS_MODEL": "@cf/meta/llama-3.1-8b-instruct",
+    "AI_MAX_CALLS_PER_RUN": "4"
+  }
+
+  // ADMIN_TOKEN（手動シミュレーション実行用のシークレット）は
+  // `wrangler secret put ADMIN_TOKEN` で設定してください（任意）。
+}
