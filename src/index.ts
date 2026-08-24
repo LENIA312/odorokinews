@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "./types";
 import {
   clearPeopleOrganization,
+  createCity,
   createOrganization,
   getCity,
   getEvent,
@@ -27,13 +28,15 @@ import {
   listTimeline,
   parseIdArray,
   searchPeopleAdmin,
+  updateCityAdmin,
   updateNews,
   updateOrganizationAdmin,
   updatePerson,
   updateWorldAutoPublishTimes,
+  updateWorldWeather,
 } from "./db/queries";
 import { html } from "./utils/html";
-import { NEWS_CATEGORIES, ORG_KINDS, ORG_STATUSES, PERSON_STATUSES } from "./constants";
+import { CITY_STATUSES, NEWS_CATEGORIES, ORG_KINDS, ORG_STATUSES, PERSON_STATUSES, WEATHER_CONDITIONS } from "./constants";
 import { page } from "./views/layout";
 import { newsListSection, categoryTabs } from "./views/newsList";
 import { newsDetailView } from "./views/newsDetail";
@@ -46,10 +49,12 @@ import { notFoundView } from "./views/notFound";
 import { adminDashboardPage } from "./views/admin";
 import { mapView } from "./views/map";
 import {
+  assignNewCityPosition,
   assignNewOrgPosition,
   assignPersonZones,
   buildAllEdges,
   buildAllZones,
+  cityZoneId,
   orgZoneId,
 } from "./views/mapZones";
 import { runDailySimulation } from "./simulation/runDailySimulation";
@@ -221,9 +226,9 @@ app.get("/economy", async (c) => {
 });
 
 app.get("/map", async (c) => {
-  const [world, orgs] = await Promise.all([getWorld(c.env), listOrganizations(c.env)]);
-  const zones = buildAllZones(orgs.results ?? []);
-  const edges = buildAllEdges(zones, orgs.results ?? []);
+  const [world, orgs, cities] = await Promise.all([getWorld(c.env), listOrganizations(c.env), listCities(c.env)]);
+  const zones = buildAllZones(orgs.results ?? [], cities.results ?? []);
+  const edges = buildAllEdges(zones, orgs.results ?? [], cities.results ?? []);
   return c.html(
     page({
       title: "街の様子",
@@ -235,17 +240,24 @@ app.get("/map", async (c) => {
 });
 
 app.get("/api/map/people", async (c) => {
-  const [people, orgs, latestNews] = await Promise.all([
+  const [people, orgs, cities, latestNews] = await Promise.all([
     listPeople(c.env, 300),
     listOrganizations(c.env),
+    listCities(c.env),
     listNews(c.env, 1),
   ]);
   const orgList = orgs.results ?? [];
+  const cityList = cities.results ?? [];
 
   const zoneStatus: Record<string, string> = {};
   for (const org of orgList) {
     if (org.status !== "active") {
       zoneStatus[orgZoneId(org.id)] = org.status;
+    }
+  }
+  for (const city of cityList) {
+    if (city.id !== 1 && city.status !== "active") {
+      zoneStatus[cityZoneId(city.id)] = "draft";
     }
   }
 
@@ -281,6 +293,7 @@ app.get("/api/clock", async (c) => {
     worldDate: world.current_date,
     lastPublishedAt: world.last_published_at,
     nextPublishAt: nextMs ? new Date(nextMs).toISOString() : null,
+    weather: world.weather,
   });
 });
 
@@ -337,7 +350,7 @@ app.get("/api/admin/settings", async (c) => {
   if (authError) return authError;
   const world = await getWorld(c.env);
   if (!world) return c.json({ error: "world not found" }, 500);
-  return c.json({ autoPublishTimes: parseAutoPublishTimes(world.auto_publish_times) });
+  return c.json({ autoPublishTimes: parseAutoPublishTimes(world.auto_publish_times), weather: world.weather });
 });
 
 app.put("/api/admin/settings", async (c) => {
@@ -354,6 +367,110 @@ app.put("/api/admin/settings", async (c) => {
   }
   await updateWorldAutoPublishTimes(c.env, JSON.stringify(times));
   return c.json({ ok: true, autoPublishTimes: times });
+});
+
+// ---- 管理画面: 天気・気候 ----
+
+app.put("/api/admin/weather", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const weather =
+    typeof body?.weather === "string" && (WEATHER_CONDITIONS as readonly string[]).includes(body.weather)
+      ? body.weather
+      : null;
+  if (!weather) return c.json({ error: "invalid weather" }, 400);
+  await updateWorldWeather(c.env, weather);
+  return c.json({ ok: true, weather });
+});
+
+// ---- 管理画面: 都市管理 ----
+
+app.get("/api/admin/cities", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const cities = await listCities(c.env);
+  return c.json({
+    cities: (cities.results ?? []).map((ci) => ({
+      id: ci.id,
+      name: ci.name,
+      status: ci.status,
+      population: ci.population,
+      description: ci.description,
+      industries: ci.industries ? JSON.parse(ci.industries) : [],
+    })),
+  });
+});
+
+app.post("/api/admin/cities", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const name = typeof body?.name === "string" ? body.name.trim().slice(0, 40) : "";
+  if (!name) return c.json({ error: "name is required" }, 400);
+  const population =
+    typeof body?.population === "number" && Number.isFinite(body.population) && body.population >= 0
+      ? Math.round(body.population)
+      : null;
+  const description =
+    typeof body?.description === "string" && body.description.trim() ? body.description.trim().slice(0, 300) : null;
+  const industries = Array.isArray(body?.industries)
+    ? JSON.stringify(body.industries.filter((s: unknown) => typeof s === "string").slice(0, 10))
+    : null;
+  const status =
+    typeof body?.status === "string" && (CITY_STATUSES as readonly string[]).includes(body.status)
+      ? body.status
+      : "draft";
+
+  const [orgs, cities] = await Promise.all([listOrganizations(c.env), listCities(c.env)]);
+  const existingZones = buildAllZones(orgs.results ?? [], cities.results ?? []);
+  const pos = assignNewCityPosition(existingZones.map((z) => ({ x: z.x, y: z.y })));
+
+  const id = await createCity(c.env, {
+    name,
+    population,
+    description,
+    industries,
+    status,
+    map_x: pos.x,
+    map_y: pos.y,
+  });
+
+  return c.json({ ok: true, id, position: pos });
+});
+
+app.put("/api/admin/cities/:id", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const existing = await getCity(c.env, id);
+  if (!existing) return c.json({ error: "not found" }, 404);
+
+  const body = await c.req.json().catch(() => null);
+  const name = typeof body?.name === "string" && body.name.trim() ? body.name.trim().slice(0, 40) : existing.name;
+  const population =
+    typeof body?.population === "number" && Number.isFinite(body.population) && body.population >= 0
+      ? Math.round(body.population)
+      : existing.population;
+  const description =
+    typeof body?.description === "string" && body.description.trim()
+      ? body.description.trim().slice(0, 300)
+      : existing.description;
+  const industries = Array.isArray(body?.industries)
+    ? JSON.stringify(body.industries.filter((s: unknown) => typeof s === "string").slice(0, 10))
+    : existing.industries;
+  const status =
+    typeof body?.status === "string" && (CITY_STATUSES as readonly string[]).includes(body.status)
+      ? body.status
+      : existing.status;
+
+  if (id === 1 && status !== "active") {
+    return c.json({ error: "首都(ダイナン市)は常にActiveである必要があります" }, 400);
+  }
+
+  await updateCityAdmin(c.env, id, { name, population, description, industries, status });
+  return c.json({ ok: true });
 });
 
 // ---- 管理画面: ニュース編集 ----
@@ -512,17 +629,34 @@ app.post("/api/admin/organizations", async (c) => {
     typeof body?.employeeScale === "string" && body.employeeScale.trim() ? body.employeeScale.trim().slice(0, 20) : null;
   const foundedYear =
     typeof body?.foundedYear === "number" && Number.isInteger(body.foundedYear) ? body.foundedYear : null;
+  const cityIdRaw =
+    typeof body?.city_id === "number" && Number.isInteger(body.city_id) ? body.city_id : 1;
+  const city = await getCity(c.env, cityIdRaw);
+  if (!city) return c.json({ error: "invalid city_id" }, 400);
 
   const world = await getWorld(c.env);
-  const orgs = await listOrganizations(c.env);
+  const [orgs, cities] = await Promise.all([listOrganizations(c.env), listCities(c.env)]);
   const orgList = orgs.results ?? [];
-  const zones = buildAllZones(orgList);
-  const pos = assignNewOrgPosition(zones.map((z) => ({ x: z.x, y: z.y })));
+  const cityList = cities.results ?? [];
+  const zones = buildAllZones(orgList, cityList);
+
+  // ダイナン市(id=1)の企業は既存の街並み全体の外側へ、それ以外の都市の企業は
+  // その都市自身のランドマーク付近（同じ都市の既存企業からも間隔を取って）配置する。
+  let pos: { x: number; y: number };
+  if (city.id === 1) {
+    pos = assignNewOrgPosition(zones.map((z) => ({ x: z.x, y: z.y })));
+  } else {
+    const cityAnchor = { x: city.map_x ?? 650, y: city.map_y ?? 430 };
+    const sameCityOrgPoints = orgList
+      .filter((o) => o.city_id === city.id && o.map_x != null && o.map_y != null)
+      .map((o) => ({ x: o.map_x as number, y: o.map_y as number }));
+    pos = assignNewOrgPosition([cityAnchor, ...sameCityOrgPoints]);
+  }
 
   const id = await createOrganization(c.env, {
     name,
     kind,
-    city_id: 1,
+    city_id: city.id,
     description,
     industry,
     employee_scale: employeeScale,

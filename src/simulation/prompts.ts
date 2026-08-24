@@ -7,6 +7,7 @@ export interface WorldContext {
   cityDescription: string;
   population: number | null;
   targetDate: string;
+  weather: string;
   organizations: OrganizationRow[];
   people: PersonRow[];
   recentEvents: EventRow[];
@@ -77,6 +78,7 @@ export function buildEventPrompt(ctx: WorldContext): { system: string; user: str
 都市: ${ctx.cityName}（人口: ${ctx.population ?? "不明"}）
 都市の説明: ${ctx.cityDescription}
 生成対象の世界日付: ${ctx.targetDate}
+現在の天候: ${ctx.weather}（出来事の内容と矛盾しないように。無理に天候そのものを話題にする必要はない）
 
 # 参照可能な企業・組織
 ${orgList || "(なし)"}

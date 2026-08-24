@@ -24,6 +24,10 @@ export function listCities(env: Env): Promise<D1Result<CityRow>> {
   return env.DB.prepare("SELECT * FROM cities ORDER BY population DESC").all<CityRow>();
 }
 
+export function listActiveCities(env: Env): Promise<D1Result<CityRow>> {
+  return env.DB.prepare("SELECT * FROM cities WHERE status = 'active' ORDER BY id ASC").all<CityRow>();
+}
+
 export function getOrganization(env: Env, id: number): Promise<OrganizationRow | null> {
   return env.DB.prepare("SELECT * FROM organizations WHERE id = ?").bind(id).first<OrganizationRow>();
 }
@@ -32,9 +36,21 @@ export function listOrganizations(env: Env): Promise<D1Result<OrganizationRow>> 
   return env.DB.prepare("SELECT * FROM organizations ORDER BY id ASC").all<OrganizationRow>();
 }
 
+export function listOrganizationsByCity(env: Env, cityId: number): Promise<D1Result<OrganizationRow>> {
+  return env.DB.prepare("SELECT * FROM organizations WHERE city_id = ? ORDER BY id ASC")
+    .bind(cityId)
+    .all<OrganizationRow>();
+}
+
 export function listPeople(env: Env, limit = 60): Promise<D1Result<PersonRow>> {
   return env.DB.prepare("SELECT * FROM people ORDER BY updated_at DESC, id ASC LIMIT ?")
     .bind(limit)
+    .all<PersonRow>();
+}
+
+export function listPeopleByCity(env: Env, cityId: number, limit = 60): Promise<D1Result<PersonRow>> {
+  return env.DB.prepare("SELECT * FROM people WHERE city_id = ? ORDER BY updated_at DESC, id ASC LIMIT ?")
+    .bind(cityId, limit)
     .all<PersonRow>();
 }
 
@@ -180,6 +196,49 @@ export async function getOrganizationsByIds(env: Env, ids: number[]): Promise<Or
 export function updateWorldAutoPublishTimes(env: Env, timesJson: string): Promise<D1Result> {
   return env.DB.prepare("UPDATE world SET auto_publish_times = ?, updated_at = ? WHERE id = 1")
     .bind(timesJson, new Date().toISOString())
+    .run();
+}
+
+export function updateWorldWeather(env: Env, weather: string): Promise<D1Result> {
+  return env.DB.prepare("UPDATE world SET weather = ?, updated_at = ? WHERE id = 1")
+    .bind(weather, new Date().toISOString())
+    .run();
+}
+
+export interface CityCreateFields {
+  name: string;
+  population: number | null;
+  description: string | null;
+  industries: string | null;
+  status: string;
+  map_x: number;
+  map_y: number;
+}
+
+export async function createCity(env: Env, fields: CityCreateFields): Promise<number> {
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(
+    `INSERT INTO cities (name, is_major, population, description, industries, status, map_x, map_y, created_at, updated_at)
+     VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(fields.name, fields.population, fields.description, fields.industries, fields.status, fields.map_x, fields.map_y, now, now)
+    .run();
+  return result.meta.last_row_id as number;
+}
+
+export interface CityUpdateFields {
+  name: string;
+  population: number | null;
+  description: string | null;
+  industries: string | null;
+  status: string;
+}
+
+export function updateCityAdmin(env: Env, id: number, fields: CityUpdateFields): Promise<D1Result> {
+  return env.DB.prepare(
+    `UPDATE cities SET name = ?, population = ?, description = ?, industries = ?, status = ?, updated_at = ? WHERE id = ?`
+  )
+    .bind(fields.name, fields.population, fields.description, fields.industries, fields.status, new Date().toISOString(), id)
     .run();
 }
 

@@ -2,8 +2,9 @@ import type { Env } from "../types";
 import {
   getCity,
   getWorld,
-  listOrganizations,
-  listPeople,
+  listActiveCities,
+  listOrganizationsByCity,
+  listPeopleByCity,
   listRecentEvents,
   parseIdArray,
   previousEconomicValue,
@@ -60,15 +61,22 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
   let aiCallsUsed = 0;
 
   try {
-    const [city, orgsResult, peopleResult, recentEventsResult] = await Promise.all([
-      getCity(env, 1),
-      listOrganizations(env),
-      listPeople(env, 40),
-      listRecentEvents(env, 5),
-    ]);
+    // Active(利用可能)な都市の中からランダムに1件選び、その都市を舞台に生成する。
+    // 都市管理でActiveに変更されていれば、首都ダイナン市以外も対象になりうる。
+    const activeCitiesResult = await listActiveCities(env);
+    const activeCities = activeCitiesResult.results ?? [];
+    const city = activeCities.length
+      ? activeCities[Math.floor(Math.random() * activeCities.length)]
+      : await getCity(env, 1);
     if (!city) {
       throw new Error("cities レコードが存在しない。seed.sql の投入を確認してください。");
     }
+
+    const [orgsResult, peopleResult, recentEventsResult] = await Promise.all([
+      listOrganizationsByCity(env, city.id),
+      listPeopleByCity(env, city.id, 40),
+      listRecentEvents(env, 5),
+    ]);
     const organizations = orgsResult.results ?? [];
     const people = peopleResult.results ?? [];
     const recentEvents = recentEventsResult.results ?? [];
@@ -113,6 +121,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
         cityDescription,
         population,
         targetDate,
+        weather: world.weather,
         organizations,
         people,
         recentEvents,

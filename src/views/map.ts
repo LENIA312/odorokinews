@@ -5,6 +5,7 @@ const ZONE_COLOR: Record<Zone["kind"], string> = {
   org: "#5b7fd9",
   residential: "#c98a5c",
   other: "#5fa876",
+  city: "#9b5fb0",
 };
 
 function escapeXml(s: string): string {
@@ -28,6 +29,25 @@ function zoneIcon(z: Zone): string {
       '<rect x="-10" y="-1" width="5" height="5" fill="#eef2fb" opacity="0.85"></rect>' +
       '<rect x="5" y="-1" width="5" height="5" fill="#eef2fb" opacity="0.85"></rect>' +
       closed
+    );
+  }
+
+  if (z.kind === "city") {
+    const draft = z.status === "draft";
+    const op = draft ? "0.5" : "0.92";
+    return (
+      '<ellipse cx="0" cy="14" rx="42" ry="12" fill="' + color + '" opacity="0.16"></ellipse>' +
+      '<polygon points="-20,-2 -10,-17 0,-2" fill="' + color + '" opacity="' + op + '"></polygon>' +
+      '<polygon points="0,-2 10,-21 20,-2" fill="' + color + '" opacity="' + op + '"></polygon>' +
+      '<polygon points="18,-2 27,-13 36,-2" fill="' + color + '" opacity="' + op + '"></polygon>' +
+      '<rect x="-24" y="-2" width="60" height="17" rx="1.5" fill="' + color + '" opacity="' + op + '"></rect>' +
+      '<rect x="-18" y="4" width="6" height="6" fill="#eef2fb" opacity="0.85"></rect>' +
+      '<rect x="-4" y="4" width="6" height="6" fill="#eef2fb" opacity="0.85"></rect>' +
+      '<rect x="10" y="4" width="6" height="6" fill="#eef2fb" opacity="0.85"></rect>' +
+      '<rect x="24" y="4" width="6" height="6" fill="#eef2fb" opacity="0.85"></rect>' +
+      (draft
+        ? '<text x="6" y="-26" text-anchor="middle" font-size="9" fill="#8a7f5f">準備中（未使用）</text>'
+        : "")
     );
   }
 
@@ -211,12 +231,16 @@ function roadNetwork(zoneById: Record<string, Zone>, edges: [string, string][]):
 function zoneMarkers(zones: Zone[]): string {
   var markers = zones
     .map(function (z) {
+      var isCity = z.kind === "city";
+      var scale = isCity ? 1.7 : 1.25;
+      var ringR = isCity ? 34 : 22;
+      var spotR = isCity ? 40 : 27;
       return (
-        '<g id="zone-' + z.id + '" transform="translate(' + z.x + "," + z.y + ') scale(1.25)">' +
-        '<circle class="status-ring" r="22" fill="none" stroke-width="2.6" opacity="0"></circle>' +
-        '<circle class="spotlight-ring" r="27" fill="none" stroke-width="2.2" opacity="0"></circle>' +
+        '<g id="zone-' + z.id + '" transform="translate(' + z.x + "," + z.y + ") scale(" + scale + ')">' +
+        '<circle class="status-ring" r="' + ringR + '" fill="none" stroke-width="2.6" opacity="0"></circle>' +
+        '<circle class="spotlight-ring" r="' + spotR + '" fill="none" stroke-width="2.2" opacity="0"></circle>' +
         zoneIcon(z) +
-        '<text x="0" y="28" text-anchor="middle" font-size="10" fill="#4a473c" font-family="Hiragino Sans, Noto Sans JP, sans-serif">' +
+        '<text x="6" y="' + (isCity ? 34 : 28) + '" text-anchor="middle" font-size="' + (isCity ? 12 : 10) + '" font-weight="' + (isCity ? 700 : 400) + '" fill="#4a473c" font-family="Hiragino Sans, Noto Sans JP, sans-serif">' +
         escapeXml(z.label) +
         "</text></g>"
       );
@@ -226,7 +250,13 @@ function zoneMarkers(zones: Zone[]): string {
 }
 
 const STYLE_EXTRA = [
-  "#cityMap { width:100%; height:auto; border:1px solid var(--line); border-radius:8px; }",
+  "#cityMap {",
+  "  width:100%; height:auto; border:1px solid var(--line); border-radius:8px;",
+  "  touch-action: none;",
+  "  -webkit-user-select: none; -moz-user-select: none; user-select: none;",
+  "  -webkit-touch-callout: none;",
+  "}",
+  "#cityMap text { -webkit-user-select: none; user-select: none; }",
   "#mapBg { fill: #f4efe2; }",
   "#clock { font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.85rem; color:var(--ink-soft); margin:0.4rem 0 0.4rem; }",
   "#spotlight { font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.85rem; background:var(--paper); border:1px solid var(--line); border-radius:6px; padding:0.5rem 0.8rem; margin-bottom:0.8rem; display:none; }",
@@ -239,6 +269,21 @@ const STYLE_EXTRA = [
   "@keyframes spotlightPulse { 0% { r: 22; opacity: 0.55; } 100% { r: 38; opacity: 0; } }",
   ".spotlight-ring.active { animation: spotlightPulse 1.6s ease-out infinite; stroke: #9c2b2b; }",
   ".status-ring.active { opacity: 0.9; }",
+  "#personSearchWrap { position:relative; margin-bottom:0.6rem; }",
+  "#personSearchInput {",
+  "  width:100%; box-sizing:border-box; font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.9rem;",
+  "  padding:0.5rem 0.8rem; border:1px solid var(--line); border-radius:6px;",
+  "}",
+  "#personSearchResults {",
+  "  position:absolute; left:0; right:0; top:100%; z-index:5; background:var(--paper); border:1px solid var(--line);",
+  "  border-top:none; border-radius:0 0 6px 6px; max-height:14rem; overflow-y:auto; display:none;",
+  "}",
+  "#personSearchResults.open { display:block; }",
+  "#personSearchResults div {",
+  "  padding:0.45rem 0.8rem; font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.85rem; cursor:pointer;",
+  "}",
+  "#personSearchResults div:hover, #personSearchResults div.active { background:var(--bg); }",
+  ".focus-ring { animation: spotlightPulse 1s ease-out 3; stroke: #5b8cff; }",
 ].join("\n");
 
 export function mapView(zones: Zone[], edges: [string, string][]): RawHtml {
@@ -263,6 +308,10 @@ export function mapView(zones: Zone[], edges: [string, string][]): RawHtml {
     <style>${raw(STYLE_EXTRA)}</style>
     <div id="clock">読み込み中...</div>
     <div id="spotlight"></div>
+    <div id="personSearchWrap">
+      <input type="text" id="personSearchInput" placeholder="人物名で検索して地図上の位置を表示" autocomplete="off" />
+      <div id="personSearchResults"></div>
+    </div>
     <svg id="cityMap" viewBox="${viewBox}" xmlns="http://www.w3.org/2000/svg">
       <rect id="mapBg" x="${Math.round(bounds.minX)}" y="${Math.round(bounds.minY)}" width="${Math.round(bounds.maxX - bounds.minX)}" height="${Math.round(bounds.maxY - bounds.minY)}"></rect>
       ${raw(svgBody)}
@@ -351,6 +400,7 @@ const CLIENT_SCRIPT = [
   "    celebrating: '#d4a017',",
   "    recovering: '#5b7fd9',",
   "    bankrupt: '#6b6650',",
+  "    draft: '#9b8f6b',",
   "  };",
   "",
   "  function lerp(a, b, t) { return a + (b - a) * t; }",
@@ -523,8 +573,9 @@ const CLIENT_SCRIPT = [
   "    requestAnimationFrame(tick);",
   "  }",
   "",
-  "  // ホイールでの拡大縮小とドラッグでの移動（viewBoxを直接操作する）。",
-  "  (function enablePanZoom() {",
+  "  // ホイール／ピンチでの拡大縮小とドラッグ／スワイプでの移動（viewBoxを直接操作する）。",
+  "  // マップ内のイベントだけを扱うため、ページ全体のスクロール・拡大には影響しない。",
+  "  var panZoom = (function enablePanZoom() {",
   "    var svg = document.getElementById('cityMap');",
   "    var FULL = { x: BOUNDS.minX, y: BOUNDS.minY, w: BOUNDS.maxX - BOUNDS.minX, h: BOUNDS.maxY - BOUNDS.minY };",
   "    var view = { x: FULL.x, y: FULL.y, w: FULL.w, h: FULL.h };",
@@ -532,7 +583,7 @@ const CLIENT_SCRIPT = [
   "      svg.setAttribute('viewBox', view.x + ' ' + view.y + ' ' + view.w + ' ' + view.h);",
   "    }",
   "    function clamp() {",
-  "      view.w = Math.max(300, Math.min(FULL.w, view.w));",
+  "      view.w = Math.max(150, Math.min(FULL.w, view.w));",
   "      view.h = view.w * (FULL.h / FULL.w);",
   "      view.x = Math.max(FULL.x, Math.min(FULL.x + FULL.w - view.w, view.x));",
   "      view.y = Math.max(FULL.y, Math.min(FULL.y + FULL.h - view.h, view.y));",
@@ -551,26 +602,162 @@ const CLIENT_SCRIPT = [
   "      applyView();",
   "    }, { passive: false });",
   "",
+  "    // 人物の点(.person-dot)の上での操作は、そのままクリック判定に渡す",
+  "    // （setPointerCaptureしてしまうと、その点自身のclickイベントが発火しなくなるため）。",
+  "    function isPersonDot(ev) {",
+  "      return !!(ev.target && ev.target.classList && ev.target.classList.contains('person-dot'));",
+  "    }",
+  "",
+  "    var pointers = {};",
   "    var dragging = false, lastX = 0, lastY = 0;",
+  "    var pinchStartDist = null, pinchStartMid = null, pinchStartView = null;",
+  "",
+  "    function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }",
+  "    function mid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }",
+  "    function pointerList() {",
+  "      return Object.keys(pointers).map(function (id) { return pointers[id]; });",
+  "    }",
+  "",
   "    svg.addEventListener('pointerdown', function (ev) {",
-  "      dragging = true; lastX = ev.clientX; lastY = ev.clientY;",
+  "      if (isPersonDot(ev)) return;",
+  "      pointers[ev.pointerId] = { x: ev.clientX, y: ev.clientY };",
   "      svg.setPointerCapture(ev.pointerId);",
-  "      svg.style.cursor = 'grabbing';",
+  "      var ids = Object.keys(pointers);",
+  "      if (ids.length === 1) {",
+  "        dragging = true; lastX = ev.clientX; lastY = ev.clientY;",
+  "        svg.style.cursor = 'grabbing';",
+  "      } else if (ids.length === 2) {",
+  "        dragging = false;",
+  "        var pts = pointerList();",
+  "        pinchStartDist = dist(pts[0], pts[1]);",
+  "        pinchStartMid = mid(pts[0], pts[1]);",
+  "        pinchStartView = { x: view.x, y: view.y, w: view.w, h: view.h };",
+  "      }",
   "    });",
   "    svg.addEventListener('pointermove', function (ev) {",
-  "      if (!dragging) return;",
+  "      if (!pointers[ev.pointerId] && !dragging) return;",
+  "      if (pointers[ev.pointerId]) pointers[ev.pointerId] = { x: ev.clientX, y: ev.clientY };",
+  "      var ids = Object.keys(pointers);",
   "      var rect = svg.getBoundingClientRect();",
+  "      if (ids.length >= 2 && pinchStartDist) {",
+  "        var pts = pointerList();",
+  "        var newDist = dist(pts[0], pts[1]);",
+  "        var scale = pinchStartDist / Math.max(1, newDist);",
+  "        view.w = pinchStartView.w * scale;",
+  "        view.h = pinchStartView.h * scale;",
+  "        var newMid = mid(pts[0], pts[1]);",
+  "        var px = pinchStartView.x + ((pinchStartMid.x - rect.left) / rect.width) * pinchStartView.w;",
+  "        var py = pinchStartView.y + ((pinchStartMid.y - rect.top) / rect.height) * pinchStartView.h;",
+  "        view.x = px - ((newMid.x - rect.left) / rect.width) * view.w;",
+  "        view.y = py - ((newMid.y - rect.top) / rect.height) * view.h;",
+  "        clamp();",
+  "        applyView();",
+  "        return;",
+  "      }",
+  "      if (!dragging) return;",
   "      view.x -= (ev.clientX - lastX) * (view.w / rect.width);",
   "      view.y -= (ev.clientY - lastY) * (view.h / rect.height);",
   "      lastX = ev.clientX; lastY = ev.clientY;",
   "      clamp();",
   "      applyView();",
   "    });",
-  "    function endDrag() { dragging = false; svg.style.cursor = 'grab'; }",
-  "    svg.addEventListener('pointerup', endDrag);",
-  "    svg.addEventListener('pointerleave', endDrag);",
+  "    function releasePointer(ev) {",
+  "      delete pointers[ev.pointerId];",
+  "      var ids = Object.keys(pointers);",
+  "      pinchStartDist = null;",
+  "      if (ids.length === 0) {",
+  "        dragging = false;",
+  "        svg.style.cursor = 'grab';",
+  "      } else if (ids.length === 1) {",
+  "        dragging = true;",
+  "        lastX = pointers[ids[0]].x;",
+  "        lastY = pointers[ids[0]].y;",
+  "      }",
+  "    }",
+  "    svg.addEventListener('pointerup', releasePointer);",
+  "    svg.addEventListener('pointercancel', releasePointer);",
+  "    svg.addEventListener('pointerleave', function (ev) {",
+  "      if (Object.prototype.hasOwnProperty.call(pointers, ev.pointerId)) releasePointer(ev);",
+  "    });",
   "    svg.style.cursor = 'grab';",
   "    svg.style.touchAction = 'none';",
+  "",
+  "    function focusOn(x, y, targetW) {",
+  "      var w = Math.min(FULL.w, targetW || 420);",
+  "      view.w = w;",
+  "      view.h = w * (FULL.h / FULL.w);",
+  "      view.x = x - view.w / 2;",
+  "      view.y = y - view.h / 2;",
+  "      clamp();",
+  "      applyView();",
+  "    }",
+  "",
+  "    return { focusOn: focusOn };",
+  "  })();",
+  "",
+  "  function currentPersonPosition(person) {",
+  "    var dot = dotEls[person.id];",
+  "    if (dot) return { x: parseFloat(dot.getAttribute('cx')), y: parseFloat(dot.getAttribute('cy')) };",
+  "    var nowSec = Date.now() / 1000;",
+  "    var hour = (nowSec % DAY_SECONDS) / DAY_SECONDS * 24;",
+  "    return computePosition(person, hour, nowSec);",
+  "  }",
+  "",
+  "  function showFocusRing(x, y) {",
+  "    var ring = document.createElementNS(SVG_NS, 'circle');",
+  "    ring.setAttribute('cx', x);",
+  "    ring.setAttribute('cy', y);",
+  "    ring.setAttribute('r', 14);",
+  "    ring.setAttribute('fill', 'none');",
+  "    ring.setAttribute('stroke-width', '2.5');",
+  "    ring.setAttribute('class', 'focus-ring');",
+  "    peopleLayer.appendChild(ring);",
+  "    setTimeout(function () { ring.remove(); }, 3000);",
+  "  }",
+  "",
+  "  function focusOnPerson(person) {",
+  "    var pos = currentPersonPosition(person);",
+  "    panZoom.focusOn(pos.x, pos.y, 420);",
+  "    showFocusRing(pos.x, pos.y);",
+  "    var tip = document.getElementById('personTip');",
+  "    tip.innerHTML = '<a href=\"/people/' + person.id + '\" target=\"_blank\">' +",
+  "      escapeHtml(person.name) + '</a>（' + escapeHtml(person.occupation || '不明') +",
+  "      (person.status && person.status !== 'alive' ? ' / ' + escapeHtml(person.status) : '') + '）';",
+  "  }",
+  "",
+  "  (function enablePersonSearch() {",
+  "    var input = document.getElementById('personSearchInput');",
+  "    var resultsBox = document.getElementById('personSearchResults');",
+  "    if (!input || !resultsBox) return;",
+  "    function render(matches) {",
+  "      resultsBox.innerHTML = '';",
+  "      matches.slice(0, 8).forEach(function (p) {",
+  "        var row = document.createElement('div');",
+  "        row.textContent = p.name + (p.occupation ? '（' + p.occupation + '）' : '');",
+  "        row.addEventListener('pointerdown', function (ev) {",
+  "          ev.preventDefault();",
+  "          focusOnPerson(p);",
+  "          input.value = p.name;",
+  "          resultsBox.classList.remove('open');",
+  "        });",
+  "        resultsBox.appendChild(row);",
+  "      });",
+  "      resultsBox.classList.toggle('open', matches.length > 0);",
+  "    }",
+  "    input.addEventListener('input', function () {",
+  "      var q = input.value.trim();",
+  "      if (!q) { resultsBox.classList.remove('open'); resultsBox.innerHTML = ''; return; }",
+  "      var matches = people.filter(function (p) {",
+  "        return (p.name && p.name.indexOf(q) !== -1) || (p.name_kana && p.name_kana.indexOf(q) !== -1);",
+  "      });",
+  "      render(matches);",
+  "    });",
+  "    input.addEventListener('focus', function () {",
+  "      if (input.value.trim()) input.dispatchEvent(new Event('input'));",
+  "    });",
+  "    input.addEventListener('blur', function () {",
+  "      setTimeout(function () { resultsBox.classList.remove('open'); }, 150);",
+  "    });",
   "  })();",
   "",
   "  loadMapData().then(function () {",

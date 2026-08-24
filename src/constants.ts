@@ -24,3 +24,20 @@ export type OrgStatus = (typeof ORG_STATUSES)[number];
 
 export const ORG_KINDS = ["company", "government", "school", "other"] as const;
 export type OrgKind = (typeof ORG_KINDS)[number];
+
+// draft: 管理画面で作成済みだが、まだ生成対象に含めない都市。
+// active: 今後のシミュレーション生成で使用される都市。
+export const CITY_STATUSES = ["active", "draft"] as const;
+export type CityStatus = (typeof CITY_STATUSES)[number];
+
+export const WEATHER_CONDITIONS = [
+  "晴れ",
+  "曇り",
+  "雨",
+  "雷雨",
+  "霧",
+  "雪",
+  "強風",
+  "魔力嵐",
+] as const;
+export type WeatherCondition = (typeof WEATHER_CONDITIONS)[number];

@@ -5,15 +5,15 @@
 // 企業・行政などの組織ゾーンは organizations テーブル(map_x/map_y)を基に
 // 動的に構築し、新しい企業が追加されるたびに地図が自動的に広がっていく。
 
-import type { OrganizationRow, PersonRow } from "../types";
+import type { CityRow, OrganizationRow, PersonRow } from "../types";
 
 export interface Zone {
   id: string;
   label: string;
   x: number;
   y: number;
-  kind: "org" | "residential" | "other";
-  status?: string; // orgゾーンのみ。'active'以外なら地図上にリングを表示する。
+  kind: "org" | "residential" | "other" | "city";
+  status?: string; // org/cityゾーンのみ。'active'以外なら地図上にリングを表示する。
 }
 
 export const FIXED_ZONES: Zone[] = [
@@ -49,6 +49,10 @@ export function orgZoneId(orgId: number): string {
   return `org-${orgId}`;
 }
 
+export function cityZoneId(cityId: number): string {
+  return `city-${cityId}`;
+}
+
 function distance(a: { x: number; y: number }, b: { x: number; y: number }): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
@@ -76,6 +80,35 @@ export function assignNewOrgPosition(existingZones: { x: number; y: number }[]):
     const x = Math.round(cx + Math.cos(angle) * radius);
     const y = Math.round(cy + Math.sin(angle) * radius * 0.6);
     const tooClose = existingZones.some((z) => distance(z, { x, y }) < 170);
+    if (!tooClose) return { x, y };
+  }
+  return { x: Math.round(cx + baseRadius), y: Math.round(cy) };
+}
+
+/**
+ * 既存ゾーン群の外側に、新しい都市の座標を自動的に割り当てる。
+ * 都市は組織1件よりずっと大きな区画なので、間隔を広めに取って
+ * 既存の街並みと視覚的にはっきり分かれる位置に配置する。
+ */
+export function assignNewCityPosition(existingPoints: { x: number; y: number }[]): { x: number; y: number } {
+  if (existingPoints.length === 0) return { x: 650, y: 430 };
+
+  const xs = existingPoints.map((z) => z.x);
+  const ys = existingPoints.map((z) => z.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const baseRadius = Math.max(maxX - minX, maxY - minY) / 2 + 500;
+
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const angle = ((attempt * 71) % 360) * (Math.PI / 180);
+    const radius = baseRadius + Math.floor(attempt / 8) * 400;
+    const x = Math.round(cx + Math.cos(angle) * radius);
+    const y = Math.round(cy + Math.sin(angle) * radius * 0.6);
+    const tooClose = existingPoints.some((z) => distance(z, { x, y }) < 400);
     if (!tooClose) return { x, y };
   }
   return { x: Math.round(cx + baseRadius), y: Math.round(cy) };
@@ -109,16 +142,38 @@ export function buildOrgZones(organizations: OrganizationRow[]): Zone[] {
     }));
 }
 
-/** 固定ゾーン+組織ゾーンを合わせた全ゾーン一覧を返す。 */
-export function buildAllZones(organizations: OrganizationRow[]): Zone[] {
-  return [...FIXED_ZONES, ...buildOrgZones(organizations)];
+/**
+ * cities テーブルの内容から、都市ゾーンの一覧を構築する。
+ * 首都ダイナン市(id=1)は既存の街並み全体がその表現なので対象外とし、
+ * それ以外の都市だけを地図上のランドマークとして表示する。
+ */
+export function buildCityZones(cities: CityRow[]): Zone[] {
+  return cities
+    .filter((c) => c.id !== 1 && c.map_x != null && c.map_y != null)
+    .map((c) => ({
+      id: cityZoneId(c.id),
+      label: c.name,
+      x: c.map_x as number,
+      y: c.map_y as number,
+      kind: "city" as const,
+      status: c.status,
+    }));
+}
+
+/** 固定ゾーン+組織ゾーン+都市ゾーンを合わせた全ゾーン一覧を返す。 */
+export function buildAllZones(organizations: OrganizationRow[], cities: CityRow[] = []): Zone[] {
+  return [...FIXED_ZONES, ...buildOrgZones(organizations), ...buildCityZones(cities)];
 }
 
 /**
- * FIXED_EDGESに加え、創業6組織以外の組織ゾーンについては
+ * FIXED_EDGESに加え、創業6組織以外の組織ゾーン・追加された都市ゾーンについては
  * 最寄りのゾーンへ自動的に道をつなぐ。
  */
-export function buildAllEdges(zones: Zone[], organizations: OrganizationRow[]): [string, string][] {
+export function buildAllEdges(
+  zones: Zone[],
+  organizations: OrganizationRow[],
+  cities: CityRow[] = []
+): [string, string][] {
   const fixedOrgIds = new Set(FIXED_EDGES.flatMap((e) => e));
   const edges: [string, string][] = [...FIXED_EDGES];
   const placed: Zone[] = [...FIXED_ZONES];
@@ -142,6 +197,16 @@ export function buildAllEdges(zones: Zone[], organizations: OrganizationRow[]): 
     placed.push(zone);
   }
 
+  for (const city of cities) {
+    if (city.id === 1) continue;
+    const zid = cityZoneId(city.id);
+    const zone = zones.find((z) => z.id === zid);
+    if (!zone) continue;
+    const nearest = nearestZoneId(zone, placed);
+    if (nearest) edges.push([zid, nearest]);
+    placed.push(zone);
+  }
+
   return edges;
 }
 
@@ -155,6 +220,7 @@ function hashToIndex(id: number, mod: number): number {
 export interface PersonZoneAssignment {
   id: number;
   name: string;
+  name_kana: string | null;
   occupation: string | null;
   status: string;
   homeZone: string;
@@ -163,12 +229,17 @@ export interface PersonZoneAssignment {
 
 export function assignPersonZones(people: PersonRow[]): PersonZoneAssignment[] {
   return people.map((p) => {
+    // ダイナン市(id=1)以外の都市の住民は、まだ専用の住宅街ゾーンを
+    // 持たないため、所属先がなければその都市のランドマークを拠点として扱う。
+    const inMainCity = !p.city_id || p.city_id === 1;
     const homeIndex = Math.abs(hashToIndex(p.id, RESIDENTIAL_ZONES.length));
-    const homeZone = RESIDENTIAL_ZONES[homeIndex];
+    const homeZone = inMainCity ? RESIDENTIAL_ZONES[homeIndex] : cityZoneId(p.city_id as number);
 
     let workZone: string;
     if (p.organization_id) {
       workZone = orgZoneId(p.organization_id);
+    } else if (!inMainCity) {
+      workZone = homeZone;
     } else {
       const occ = p.occupation ?? "";
       if (occ.includes("学生")) {
@@ -183,6 +254,7 @@ export function assignPersonZones(people: PersonRow[]): PersonZoneAssignment[] {
     return {
       id: p.id,
       name: p.name,
+      name_kana: p.name_kana,
       occupation: p.occupation,
       status: p.status,
       homeZone,

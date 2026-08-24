@@ -103,6 +103,11 @@ const STYLE = `
     letter-spacing: 0.05em;
     margin-top: 0.15rem;
   }
+  .mosen-clock .clock-weather {
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    margin-top: 0.1rem;
+  }
 
   h2.section-title {
     font-size: 1.1rem;
@@ -268,6 +273,22 @@ const STYLE = `
     color: var(--ink-soft);
     border-top: 1px solid var(--line);
   }
+  footer.site p { margin: 0 0 0.5rem; }
+  footer.site p.copyright { margin-bottom: 0; opacity: 0.75; }
+
+  @media (max-width: 520px) {
+    .masthead h1 { font-size: 1.7rem; }
+    nav.site { gap: 0.9rem; font-size: 0.82rem; }
+    main { padding: 1.1rem 0.8rem 3rem; }
+    .news-card { padding: 0.75rem 0.85rem; }
+    .news-card h3 { font-size: 1.05rem; line-height: 1.45; }
+    .news-card p.lead {
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+  }
 `;
 
 // ヘッダーの時計。日付は/api/clockから取得し、秒単位の時刻は
@@ -278,8 +299,10 @@ const CLOCK_SCRIPT = [
   "(function () {",
   "  var dateEl = document.getElementById('mosenClockDate');",
   "  var timeEl = document.getElementById('mosenClockTime');",
+  "  var weatherEl = document.getElementById('mosenClockWeather');",
   "  if (!dateEl) return;",
   "  var WEEKDAY = ['日','月','火','水','木','金','土'];",
+  "  var WEATHER_ICON = { '晴れ': '☀', '曇り': '☁', '雨': '☂', '雷雨': '⚡', '霧': '🌫', '雪': '❄', '強風': '🌬', '魔力嵐': '✨' };",
   "  function formatDate(dateStr) {",
   "    var parts = dateStr.split('-').map(Number);",
   "    var wd = WEEKDAY[new Date(Date.UTC(parts[0], parts[1] - 1, parts[2])).getUTCDay()];",
@@ -307,6 +330,9 @@ const CLOCK_SCRIPT = [
   "      dateEl.textContent = formatDate(data.worldDate);",
   "      lastMs = data.lastPublishedAt ? new Date(data.lastPublishedAt).getTime() : null;",
   "      nextMs = data.nextPublishAt ? new Date(data.nextPublishAt).getTime() : null;",
+  "      if (weatherEl && data.weather) {",
+  "        weatherEl.textContent = (WEATHER_ICON[data.weather] || '') + ' ' + data.weather;",
+  "      }",
   "    }).catch(function () {});",
   "  }",
   "",
@@ -327,6 +353,7 @@ export function page(opts: { title: string; activePath: string; worldDate?: stri
         <div class="clock-label">MOSE'N UNGRA</div>
         <div class="clock-date" id="mosenClockDate">${formatWorldDateWithWeekdayJa(opts.worldDate)}</div>
         <div class="clock-time" id="mosenClockTime">--:--:--</div>
+        <div class="clock-weather" id="mosenClockWeather"></div>
       </div>`
     : raw("");
 
@@ -353,7 +380,8 @@ export function page(opts: { title: string; activePath: string; worldDate?: stri
     ${opts.body}
   </main>
   <footer class="site">
-    モーゼン・クロニクルは架空世界「モーゼン・アングラ」の出来事を伝えるニュースサイトです。登場する人物・企業・出来事はすべて架空であり、実在するものとは関係ありません。
+    <p>モーゼン・クロニクルは架空世界「モーゼン・アングラ」の出来事を伝えるニュースサイトです。登場する人物・企業・出来事はすべて架空であり、実在するものとは関係ありません。</p>
+    <p class="copyright">©Pisorium ©MigiteniEdamame</p>
   </footer>
   <script>${raw(CLOCK_SCRIPT)}</script>
 </body>

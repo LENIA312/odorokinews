@@ -21,6 +21,7 @@ export interface WorldRow {
   auto_publish_times: string;
   last_auto_publish_slot: string | null;
   last_published_at: string | null;
+  weather: string;
   created_at: string;
   updated_at: string;
 }
@@ -32,6 +33,9 @@ export interface CityRow {
   population: number | null;
   description: string | null;
   industries: string | null;
+  status: string;
+  map_x: number | null;
+  map_y: number | null;
   created_at: string;
   updated_at: string;
 }
