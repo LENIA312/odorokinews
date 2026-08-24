@@ -54,14 +54,26 @@ export function assignNewOrgPosition(existingZones: { x: number; y: number }[]):
   const startAngle = Math.random() * 360;
 
   for (let attempt = 0; attempt < 32; attempt++) {
-    const angle = ((startAngle + attempt * 53) % 360) * (Math.PI / 180);
+    // 黄金角(≈137.5度)刻みで試す。53度刻みだと8回ごとに同じような向きへ戻ってきてしまい
+    // （53*8=424≈360+64、実質5方向程度しか試せていなかった）、既存ゾーンの並びによっては
+    // その少ない方向が軒並みブロックされてフォールバックに落ちやすかった。無理数に近い
+    // 黄金角なら32回でも方向が被りにくく、フォールバックの発生自体を減らせる。
+    const angle = ((startAngle + attempt * 137.508) % 360) * (Math.PI / 180);
     const radius = baseRadius + Math.floor(attempt / 8) * 200;
     const x = Math.round(cx + Math.cos(angle) * radius);
     const y = Math.round(cy + Math.sin(angle) * radius * 0.6);
     const tooClose = existingZones.some((z) => distance(z, { x, y }) < 170);
     if (!tooClose) return { x, y };
   }
-  return { x: Math.round(cx + baseRadius), y: Math.round(cy) };
+  // 32回すべて失敗した場合のフォールバック。以前はここが無条件で真右(角度0度)固定になっており、
+  // 開始角度をランダム化した効果を打ち消して「常に右に伸びる」症状の実際の原因になっていた
+  // （本番で新都市ジョウナンがこの経路にちょうど落ちて真右に配置されたことで発覚）。
+  // ここも同じstartAngleを使い、右方向固定を避ける。
+  const fallbackAngle = (startAngle * Math.PI) / 180;
+  return {
+    x: Math.round(cx + Math.cos(fallbackAngle) * baseRadius),
+    y: Math.round(cy + Math.sin(fallbackAngle) * baseRadius * 0.6),
+  };
 }
 
 /**
@@ -86,14 +98,20 @@ export function assignNewCityPosition(existingPoints: { x: number; y: number }[]
   const startAngle = Math.random() * 360;
 
   for (let attempt = 0; attempt < 32; attempt++) {
-    const angle = ((startAngle + attempt * 71) % 360) * (Math.PI / 180);
+    // 黄金角刻み（assignNewOrgPositionと同じ理由）。
+    const angle = ((startAngle + attempt * 137.508) % 360) * (Math.PI / 180);
     const radius = baseRadius + Math.floor(attempt / 8) * 400;
     const x = Math.round(cx + Math.cos(angle) * radius);
     const y = Math.round(cy + Math.sin(angle) * radius * 0.6);
     const tooClose = existingPoints.some((z) => distance(z, { x, y }) < 400);
     if (!tooClose) return { x, y };
   }
-  return { x: Math.round(cx + baseRadius), y: Math.round(cy) };
+  // フォールバックも右方向固定にしない（assignNewOrgPositionと同じ理由）。
+  const fallbackAngle = (startAngle * Math.PI) / 180;
+  return {
+    x: Math.round(cx + Math.cos(fallbackAngle) * baseRadius),
+    y: Math.round(cy + Math.sin(fallbackAngle) * baseRadius * 0.6),
+  };
 }
 
 /**

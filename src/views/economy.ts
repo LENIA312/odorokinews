@@ -14,7 +14,12 @@ export function economyView(
       const data = latestByOrg.get(o.id);
       const priceText = o.status === "bankrupt" ? "−" : data ? `${data.value.toLocaleString("ja-JP")} 円` : "未上場";
       const statusLabel = ORG_STATUS_LABEL[o.status] ?? o.status;
-      const detail = [o.industry, o.founded_year ? `${o.founded_year}年創業` : null, o.employee_scale]
+      const detail = [
+        o.industry,
+        o.founded_year ? `${o.founded_year}年創業` : null,
+        o.employee_count != null ? `従業員${o.employee_count.toLocaleString("ja-JP")}人` : null,
+        o.annual_revenue != null ? `年商${o.annual_revenue.toLocaleString("ja-JP")}円` : null,
+      ]
         .filter(Boolean)
         .join(" / ");
       return html`<tr class="${o.status === "bankrupt" ? "org-bankrupt" : ""}">

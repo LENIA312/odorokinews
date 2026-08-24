@@ -22,6 +22,7 @@ import { MAX_TOTAL_CITIES } from "../constants";
 import { computeBirthDateFromAge } from "../utils/date";
 import { assignNewCityPosition, assignZonePositionForCity } from "../views/mapZones";
 import { seedStarterFacilities } from "./citySeed";
+import { applyEconomicGrowth } from "./economicGrowth";
 import { callAiForJson } from "./ai";
 import { buildEventPrompt, buildNewsPrompt } from "./prompts";
 import {
@@ -231,7 +232,8 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
         city_id: cityId,
         description: null,
         industry: no.industry,
-        employee_scale: null,
+        employee_count: null, // 次回の経済成長処理(economicGrowth.ts)が新設企業として初期値を与える
+        annual_revenue: null,
         founded_year: null,
         map_x: pos.x,
         map_y: pos.y,
@@ -254,10 +256,13 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
     }
 
     // AIが新しい都市の誕生を提案した場合、都市自体をDBへ作成する（validateEventDraftで
-    // canCreateCity/説明文の長さを検証済み）。管理画面からの手動作成と同様、draft状態で
-    // 作成し住宅街+商店街の施設も自動生成する。都市はダイナン市に限らずどの都市の出来事からも
-    // 誕生しうるが、地図上の拠点座標は「全都市を横断した全ゾーン」を基準に配置する
-    // （このイベントの舞台都市だけを基準にすると、常にその近くに現れてしまうため）。
+    // canCreateCity/説明文の長さを検証済み）。住宅街+商店街の施設も自動生成する。都市は
+    // ダイナン市に限らずどの都市の出来事からも誕生しうるが、地図上の拠点座標は「全都市を
+    // 横断した全ゾーン」を基準に配置する（このイベントの舞台都市だけを基準にすると、
+    // 常にその近くに現れてしまうため）。
+    // active状態で作成する（当初はdraftで管理者の承認待ちにしていたが、「新都市もactiveにして
+    // 良い」という方針転換により変更。作成条件(MAX_TOTAL_CITIES上限・説明文の詳細さ)は
+    // そのまま乱発防止の歯止めとして機能する）。
     let newCityId: number | null = null;
     if (eventDraft.new_city) {
       const [allOrgsResult, allFacilitiesResult] = await Promise.all([listOrganizations(env), listFacilities(env)]);
@@ -273,7 +278,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
         population: eventDraft.new_city.population,
         description: eventDraft.new_city.description,
         industries: JSON.stringify(eventDraft.new_city.industries),
-        status: "draft",
+        status: "active",
         map_x: cityPos.x,
         map_y: cityPos.y,
       });
@@ -320,6 +325,10 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
         .run();
       appliedImpact.push({ type: "economic_stock_price", target_id: orgId, value, source: "auto" });
     }
+
+    // 世界全体の背景成長: 記事に登場したかどうかに関わらず、全都市の全企業の従業員数・売上を
+    // 少しずつ伸ばし、無所属の住民をランダムに採用する（放置していても世界が成長していくように）。
+    await applyEconomicGrowth(env);
 
     const eventInsert = await env.DB.prepare(
       `INSERT INTO events

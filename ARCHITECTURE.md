@@ -116,6 +116,7 @@ src/
     worldClock.ts                 世界暦を現実1時間ごとに独立して進めるティッカー（tickWorldDate、15.1節）
     citySeed.ts                    新しい都市に住宅街+商店街の施設を自動生成する共通処理
                                     （管理画面からの手動作成/イベントAIによる自動作成の両方で使う）
+    economicGrowth.ts             企業の従業員数・売上の自動成長 + 無所属住民の自動就職（5.6節）
   social/
     dailyDigest.ts               X日次まとめ投稿の本体（対象記事の取得・AI要約・文字数管理、14章）
     xClient.ts                   X API v2投稿用のOAuth 1.0a署名生成（crypto.subtleのみで実装）
@@ -203,13 +204,19 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、静�
 | description | TEXT? | 0001 | |
 | status | TEXT | 0001 | `ORG_STATUSES`: active / expanding / under_investigation / recovering / celebrating / bankrupt |
 | industry | TEXT? | 0004 | 業種（例: 製造・造船） |
-| employee_scale | TEXT? | 0004 | 従業員規模（例: 数百人） |
+| employee_scale | TEXT? | 0004 | 従業員規模のテキスト表現（例: 数百人）。**0011以降は表示・編集どちらにも使っていない**
+  （legacyカラム、DBには残るがUIからは触れない。下記employee_countに置き換えた） |
+| employee_count | INTEGER? | 0011 | 実際の従業員数。日次シミュレーションのたびに`economicGrowth.ts`が
+  自動で少しずつ増やす（5.6節）。倒産すると0に戻る |
+| annual_revenue | INTEGER? | 0011 | 年商（円）。employee_countと同様に自動成長する。kind='company'以外
+  （行政・学校）は通常null（売上概念が薄いため） |
 | founded_year | INTEGER? | 0004 | 創業年 |
 | map_x / map_y | REAL? | 0004 | 地図上の座標（新規企業は自動配置。7章参照） |
 | created_at / updated_at | TEXT | 0001 | |
 
-企業が `bankrupt` になると、そこに勤めていた `people.organization_id` は自動的に `NULL` に戻る
-（管理画面からの手動変更・AIのstate_changes経由のどちらでも同じ挙動。`clearPeopleOrganization` / `applyStateChanges`）。
+企業が `bankrupt` になると、そこに勤めていた `people.organization_id` は自動的に `NULL` に戻り、
+`employee_count`は0・`annual_revenue`は`null`に戻る（管理画面からの手動変更・AIのstate_changes
+経由のどちらでも同じ挙動。`clearPeopleOrganization` / `applyStateChanges` / 管理画面PUTルート）。
 
 #### `facilities`（0009で新規追加）
 
@@ -375,6 +382,7 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 | `0008_occupations_and_reporters.sql` | `occupation_types`テーブル新規作成+初期データ約70件、記者2人をpeopleへ追加投入、`news.reporter_person_id` |
 | `0009_facilities.sql` | `facilities`テーブル新規作成。ダイナン市の旧`FIXED_ZONES`(大学・住宅街×3・公園・商店街)を投入 |
 | `0010_world_clock_and_ai_logs.sql` | `world.last_date_tick_at`追加。`simulation_runs.world_date`のUNIQUE制約を撤廃（テーブル再作成による移行）。`ai_call_logs`テーブル新規作成 |
+| `0011_org_growth.sql` | `organizations.employee_count/annual_revenue`追加。既存企業へemployee_scaleのテキストから概算値を逆算して初期値をバックフィル |
 
 新しいマイグレーションを追加したら、このテーブルと4.1節の該当テーブルの説明を両方更新すること。
 
@@ -454,21 +462,23 @@ enum値は変えず、UIだけ日本語化することで両立させている�
    `computeBirthDateFromAge`（年齢から機械的に算出）とその都市名で必ず埋める（1章・6.2節参照）
 8. イベントAIが提案した新規組織(new_organizations)・新規施設(new_facilities)をDBへINSERT
    （同一都市のみ許可。`assignZonePositionForCity`で自動配置し、新規組織は関係組織としても扱う）
-9. イベントAIが新都市(new_city)を提案していれば、citiesへdraft状態で作成し
+9. イベントAIが新都市(new_city)を提案していれば、citiesへactive状態で作成し
    住宅街+商店街の施設を自動生成する（`seedStarterFacilities()`、15.3節）
 10. state_changes を applyStateChanges() で実際にDBへ適用（6章・stateChanges.ts参照）
 11. AIが株価変動を提案しなかった上場企業には±5%の自動微変動を与える
     （「ニュースがあったのに経済が全く動かない」ズレを防ぐ、daily simulation限定の挙動）
-12. events テーブルへ1行INSERT
-13. source==='ai'なら記者AIを呼び出し記事を生成、buildNewsPrompt()。呼び出し結果をai_call_logsへ記録
+12. **全都市・全企業を対象に**経済成長・自動就職を適用（`applyEconomicGrowth()`、5.6節。
+    その回の舞台都市に限らない世界全体の背景処理）
+13. events テーブルへ1行INSERT
+14. source==='ai'なら記者AIを呼び出し記事を生成、buildNewsPrompt()。呼び出し結果をai_call_logsへ記録
     （call_type='daily_news'）。失敗時やfallback経路では、イベントの事実だけから機械的に記事文面を組み立てる
-14. 本文が150文字未満なら padShortArticleBody() で機械的に底上げ（6.3節）
-15. その都市に紐づく記者(occupation='記者')からランダムに1人選び news.reporter_person_id に設定
-16. news テーブルへ1行INSERT、events.news_id を更新
-17. **state_changesの適用・新規人物/組織/施設/都市の作成のいずれかがあった場合のみ**timelineへ1行追加
+15. 本文が150文字未満なら padShortArticleBody() で機械的に底上げ（6.3節）
+16. その都市に紐づく記者(occupation='記者')からランダムに1人選び news.reporter_person_id に設定
+17. news テーブルへ1行INSERT、events.news_id を更新
+18. **state_changesの適用・新規人物/組織/施設/都市の作成のいずれかがあった場合のみ**timelineへ1行追加
     （15.2節。「大事なことが起こった時だけ年表に残る」という方針）
-18. world.last_published_at / weather を更新（current_dateは更新しない）
-19. simulation_runs を 'success' に更新（例外時は'failed'+エラーメッセージ）
+19. world.last_published_at / weather を更新（current_dateは更新しない）
+20. simulation_runs を 'success' に更新（例外時は'failed'+エラーメッセージ）
 ```
 
 ### 5.2 Cron/スケジューリングの仕組み（`schedule.ts` / `worldClock.ts`）
@@ -531,6 +541,25 @@ AIが使えない/失敗した場合に必ず動く、テンプレートベー�
 完全に止まることはない**。
 
 直前イベントと同じ組織が再度選ばれないよう、`runDailySimulation`側で候補から事前に除外している。
+
+### 5.6 経済成長・自動就職（`economicGrowth.ts`）
+
+「放置していれば企業もでかくなっていく」という要望に応え、イベントAIの物語とは無関係に、
+日次シミュレーション1回につき必ず1度、`applyEconomicGrowth(env)`を呼ぶ（5.1節の流れの中、
+株価の自動微変動のすぐ後）。**この処理はその回の舞台都市だけでなく、全都市・全企業が対象**
+（放置しているだけの都市も含めて世界全体がゆっくり成長していくように）。
+
+- **企業の自動成長** (`growExistingCompanies`): `kind='company'`かつ`status != 'bankrupt'`の
+  企業すべてに対し、`employee_count`を-1%〜+4%、`annual_revenue`を-2%〜+6%のゆるい右肩上がりの
+  ランダムウォークで変動させる。`employee_count`/`annual_revenue`が`null`（新設企業など）の場合は
+  10〜60人・1人あたり300万〜1000万円/年を目安に初期値を与えてから成長させる。
+- **自動就職** (`autoHireUnaffiliatedPeople`): `status='active'`の都市ごとに、無所属
+  (`organization_id IS NULL`)かつ18歳以上・生存中の住民を対象に、学生/主婦/主夫/無職など
+  明らかに就業対象でない職業を除外した上で、1人あたり15%の確率で同じ都市の稼働中企業へランダムに
+  配属する（1都市1回あたり最大2人まで、青天井の暴走を防ぐ）。採用された人物の`organization_id`が
+  更新され、配属先の`employee_count`も+1される。
+- 倒産(bankrupt)した企業は対象外（`employee_count=0`のまま据え置き、5.4節・8.3節参照）。
+- 管理画面からも`employee_count`/`annual_revenue`を直接編集できる（8.3節、economy.tsで表示）。
 
 ---
 
@@ -669,15 +698,21 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 新しい組織・施設が追加されるたびに、地図は**既存の範囲の外側へ自動的に拡張**される:
 
 - `assignNewOrgPosition(existingPoints)`: 既存ゾーン群のバウンディングボックス外側へ、他ゾーンと
-  170px以上離れた位置を探索して配置。探索は32方向まで試すが、**開始角度は毎回ランダム**にする
-  （`Math.random() * 360`）。以前は常に0度＝真右から探索していたため、baseRadius分離れた
-  最初の候補がほぼ毎回そのまま採用されてしまい「新しいゾーンが常に右方向へしか伸びない」という
-  実際の不具合があった（マップが単調に見える主因の一つ）。
+  170px以上離れた位置を探索して配置。探索は32方向まで試し、**開始角度は毎回ランダム**にする
+  （`Math.random() * 360`）。各角度の刻み幅は黄金角(≈137.508度)を使う（以前は53度/71度の
+  固定刻みだったが、8回ごとに角度がほぼ一周してしまい実質5方向程度しか試せていなかった。
+  黄金角なら32回試しても方向がほぼ被らず、全滅してフォールバックへ落ちる頻度自体を減らせる）。
+  **32回すべて失敗した場合のフォールバックも、この乱数の開始角度を使う**よう修正した
+  （以前はフォールバックだけ無条件で真右(角度0度)固定になっており、開始角度のランダム化を
+  実質無効化してしまっていた。本番で新都市「ジョウナン」がちょうどこのフォールバック経路に
+  落ち、ダイナン→ハノシダ→ジョウナンが座標的に完全な一直線に並んでしまう不具合として発覚した。
+  「マップが単調（新しいゾーンが常に右に伸びる）」の直接の原因はこちらだった）。
 - `assignNewCityPosition(existingPoints)`: 新都市作成時、その都市の**内部的な拠点座標**
   （`cities.map_x/map_y`）を決めるためだけに使う。最低500pxの余白・400px以上の間隔を取る
-  （`assignNewOrgPosition`と同じ探索アルゴリズム＋開始角度ランダム化をスケールアップしたもの）。
-  **この座標自体は地図上に何かを描画するためのものではない**（従来の単一ランドマーク方式の
-  名残りだが、新規ゾーンの配置基準点としてのみ使う内部値として残した）。
+  （`assignNewOrgPosition`と同じ探索アルゴリズム＋開始角度ランダム化・黄金角刻み・
+  フォールバック修正をスケールアップしたもの）。**この座標自体は地図上に何かを描画するための
+  ものではない**（従来の単一ランドマーク方式の名残りだが、新規ゾーンの配置基準点としてのみ
+  使う内部値として残した）。
 - `assignZonePositionForCity(city, sameCityZonePoints)`: 組織・施設の座標を決める共通ロジック。
   **すべての都市（ダイナン市id=1も含めて）** で同じルールを使う: その都市の拠点座標
   (`cities.map_x/map_y`)+同都市の既存ゾーンだけを基準に`assignNewOrgPosition([cityAnchor,
@@ -701,7 +736,12 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 スコープされており、ページ全体のスクロール・拡大には影響しない。SVG自体（`#cityMap`）は
 `min-height:62vh; max-height:82vh;`を指定し、縦方向に十分な表示領域を確保している
 （以前は`height:auto`のみで、ゾーンが横に広いバウンディングボックスになった際に縦に狭く
-表示されがちだった）。
+表示されがちだった）。ただし`viewBox`の縦横比が`min-height`とズレる場合、ブラウザは
+`preserveAspectRatio`のデフォルト("xMidYMid meet")に従って余白（レターボックス）を追加する。
+この余白が素の背景色のまま見えると「余白が多すぎる」という印象になるため、`#cityMap`要素自体に
+`background:#f4efe2`（terrain()の地面と同じ色、`#mapBg`と同色）を指定し、SVGの外側にできる
+余白も「まだ何も無いが地続きの土地」のように見えるようにしている（余白のない一続きの土地に
+見せる、という要望への対応）。
 
 `draft`状態の都市に属するゾーン（組織・施設）は**マップに一切表示しない**。SSR時点
 （`/map`ルート、`index.ts`）で都市一覧から`draftCityIds`を計算し、`buildOrgZones`/
@@ -1200,13 +1240,15 @@ AIの自己申告（「これは重要な出来事か」をAI自身に判定さ�
 - 乱発防止のため二重の制約: (1) 既存+draft合計がMAX_TOTAL_CITIES(8)未満の場合のみ提案を許可
   （`canCreateCity`、呼び出し側で判定）、(2) 説明文がMIN_CITY_DESCRIPTION(60文字)未満の
   雑な提案は`validateEventDraft`側で機械的に却下する。
-- 受理されると、管理画面からの手動作成と同じ経路で処理する: `draft`状態で作成し、
-  `seedStarterFacilities()`（`src/simulation/citySeed.ts`、管理画面の都市作成ハンドラと共通化）で
-  住宅街+商店街の施設を自動生成する。地図上の拠点座標は、このイベントの舞台都市だけでなく
-  **全都市を横断した全ゾーン**を基準に配置する（`assignNewCityPosition`、舞台都市の近くに
-  常に現れてしまうのを避けるため）。
-- draft状態のため、地図には現れず（7章）、日次シミュレーションの舞台候補にもならない
-  （`listActiveCities`はactiveのみ）。管理者がActive化するまでは「裏側で存在するだけ」の都市になる。
+- 受理されると`seedStarterFacilities()`（`src/simulation/citySeed.ts`、管理画面の都市作成
+  ハンドラと共通化）で住宅街+商店街の施設を自動生成する。地図上の拠点座標は、このイベントの
+  舞台都市だけでなく**全都市を横断した全ゾーン**を基準に配置する（`assignNewCityPosition`、
+  舞台都市の近くに常に現れてしまうのを避けるため）。
+- **`active`状態で作成する**（当初は管理者の承認待ちとして`draft`で作成していたが、
+  「新都市もactiveにして良い」という方針転換により変更。作成条件（MAX_TOTAL_CITIES上限・
+  説明文の詳細さ）自体が乱発防止の歯止めとして機能するため、承認ステップは不要と判断した）。
+  作成直後から地図に現れ、翌回以降の日次シミュレーションの舞台候補にもなる
+  （`listActiveCities`がactiveを拾うため）。
 - 管理画面のAI補助ニュース作成（`POST /api/admin/news/generate`）からは新都市を作成できない
   （`canCreateCity`を渡していない）。あくまで日次シミュレーションのみの機能とした
   （補足記事の位置づけであるAI補助作成で都市誕生のような大きな出来事を扱うのは
@@ -1321,3 +1363,13 @@ AIの自己申告（「これは重要な出来事か」をAI自身に判定さ�
   在住者しかいないため他都市の記事にバイラインが付かなくなっていた問題を修正: その都市に記者が
   いない場合、都市を問わず全体からランダムに1人選ぶフォールバックを追加した（全国紙という体で
   他都市の記者が現地取材した扱い）。既に公開済みだった記者なしの記事1件も手動で補完。
+- 2026-08-25: マップの配置ロジックに残っていた本当の原因（32回の探索が全滅した際の
+  フォールバックが無条件で真右固定になっており、開始角度のランダム化を無効化していた）を特定・
+  修正し、角度の刻み幅も黄金角(≈137.508度)に変更して探索の網羅性を上げた（本番で新都市
+  「ジョウナン」がこのフォールバックに落ち、3都市が一直線に並んでいたのを確認、`scripts/
+  rescatter_city_positions.sql`で手動修正も実施。7.2節）。`#cityMap`にterrainと同色の
+  背景色を指定し、縦横比の都合で生じる余白も地続きの土地に見えるようにした。イベントAIが
+  作る新都市を`draft`ではなく`active`で即座に作成するよう変更（15.3節）。組織に
+  `employee_count`/`annual_revenue`（実数の従業員数・年商）を追加し、日次シミュレーションの
+  たびに全都市・全企業へ小さな自動成長を与え、無所属の住民をランダムに就職させる
+  `economicGrowth.ts`を新設（5.6節）。管理画面・経済ページの表示も新しい数値ベースに変更。

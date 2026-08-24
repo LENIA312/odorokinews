@@ -70,6 +70,8 @@ export interface OrganizationRow {
   status: string;
   industry: string | null;
   employee_scale: string | null;
+  employee_count: number | null;
+  annual_revenue: number | null;
   founded_year: number | null;
   map_x: number | null;
   map_y: number | null;

@@ -232,7 +232,7 @@ function zoneMarkers(zones: Zone[]): string {
 const STYLE_EXTRA = [
   "#cityMap {",
   "  width:100%; height:auto; min-height:62vh; max-height:82vh; border:1px solid var(--line); border-radius:8px;",
-  "  touch-action: none;",
+  "  touch-action: none; background:#f4efe2;",
   "  -webkit-user-select: none; -moz-user-select: none; user-select: none;",
   "  -webkit-touch-callout: none;",
   "}",

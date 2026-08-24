@@ -39,6 +39,12 @@ export async function applyStateChanges(
         await env.DB.prepare("UPDATE people SET organization_id = NULL, updated_at = ? WHERE organization_id = ?")
           .bind(now(), change.target_id)
           .run();
+        // 従業員数・売上も0に戻す（「倒産したのに従業員数だけ残り続ける」食い違いを防ぐ）。
+        await env.DB.prepare(
+          "UPDATE organizations SET employee_count = 0, annual_revenue = NULL, updated_at = ? WHERE id = ?"
+        )
+          .bind(now(), change.target_id)
+          .run();
       }
       appliedImpact.push(change);
     } else if (change.type === "economic_stock_price") {

@@ -919,7 +919,8 @@ app.post("/api/admin/news/generate", async (c) => {
       city_id: city.id,
       description: null,
       industry: no.industry,
-      employee_scale: null,
+      employee_count: null, // 次回の経済成長処理(economicGrowth.ts)が新設企業として初期値を与える
+      annual_revenue: null,
       founded_year: null,
       map_x: pos.x,
       map_y: pos.y,
@@ -1465,7 +1466,8 @@ app.get("/api/admin/economy-list", async (c) => {
       city_id: o.city_id,
       description: o.description,
       industry: o.industry,
-      employeeScale: o.employee_scale,
+      employeeCount: o.employee_count,
+      annualRevenue: o.annual_revenue,
       foundedYear: o.founded_year,
       stockPrice: latestByOrg.get(o.id) ?? null,
     })),
@@ -1485,8 +1487,14 @@ app.post("/api/admin/organizations", async (c) => {
   const description =
     typeof body?.description === "string" && body.description.trim() ? body.description.trim().slice(0, 200) : null;
   const industry = typeof body?.industry === "string" && body.industry.trim() ? body.industry.trim().slice(0, 30) : null;
-  const employeeScale =
-    typeof body?.employeeScale === "string" && body.employeeScale.trim() ? body.employeeScale.trim().slice(0, 20) : null;
+  const employeeCount =
+    typeof body?.employeeCount === "number" && Number.isFinite(body.employeeCount) && body.employeeCount >= 0
+      ? Math.round(body.employeeCount)
+      : null;
+  const annualRevenue =
+    typeof body?.annualRevenue === "number" && Number.isFinite(body.annualRevenue) && body.annualRevenue >= 0
+      ? Math.round(body.annualRevenue)
+      : null;
   const foundedYear =
     typeof body?.foundedYear === "number" && Number.isInteger(body.foundedYear) ? body.foundedYear : null;
   const cityIdRaw =
@@ -1513,7 +1521,8 @@ app.post("/api/admin/organizations", async (c) => {
     city_id: city.id,
     description,
     industry,
-    employee_scale: employeeScale,
+    employee_count: employeeCount,
+    annual_revenue: annualRevenue,
     founded_year: foundedYear,
     map_x: pos.x,
     map_y: pos.y,
@@ -1542,8 +1551,14 @@ app.put("/api/admin/organizations/:id", async (c) => {
   const description =
     typeof body?.description === "string" && body.description.trim() ? body.description.trim().slice(0, 200) : null;
   const industry = typeof body?.industry === "string" && body.industry.trim() ? body.industry.trim().slice(0, 30) : null;
-  const employeeScale =
-    typeof body?.employeeScale === "string" && body.employeeScale.trim() ? body.employeeScale.trim().slice(0, 20) : null;
+  const employeeCount =
+    typeof body?.employeeCount === "number" && Number.isFinite(body.employeeCount) && body.employeeCount >= 0
+      ? Math.round(body.employeeCount)
+      : existing.employee_count;
+  const annualRevenue =
+    typeof body?.annualRevenue === "number" && Number.isFinite(body.annualRevenue) && body.annualRevenue >= 0
+      ? Math.round(body.annualRevenue)
+      : existing.annual_revenue;
   const foundedYear =
     typeof body?.foundedYear === "number" && Number.isInteger(body.foundedYear) ? body.foundedYear : null;
 
@@ -1569,13 +1584,18 @@ app.put("/api/admin/organizations/:id", async (c) => {
     mapY = pos.y;
   }
 
+  // 倒産(bankrupt)になった場合は従業員数・売上を0にする（従業員の所属解除と合わせて、
+  // 「倒産した企業がなぜか従業員数だけ残り続ける」という食い違いを防ぐ）。
+  const becameBankrupt = status === "bankrupt" && existing.status !== "bankrupt";
+
   await updateOrganizationAdmin(c.env, id, {
     name,
     kind,
     status,
     description,
     industry,
-    employee_scale: employeeScale,
+    employee_count: becameBankrupt ? 0 : employeeCount,
+    annual_revenue: becameBankrupt ? null : annualRevenue,
     founded_year: foundedYear,
     city_id: city.id,
     map_x: mapX,
@@ -1584,7 +1604,7 @@ app.put("/api/admin/organizations/:id", async (c) => {
 
   // 倒産(bankrupt)になった場合、そこに勤めていた人物を無所属に戻す。
   let clearedEmployees = 0;
-  if (status === "bankrupt" && existing.status !== "bankrupt") {
+  if (becameBankrupt) {
     const result = await clearPeopleOrganization(c.env, id);
     clearedEmployees = result.meta.changes ?? 0;
   }

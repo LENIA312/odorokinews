@@ -511,7 +511,8 @@ export interface OrganizationUpdateFields {
   status: string;
   description: string | null;
   industry: string | null;
-  employee_scale: string | null;
+  employee_count: number | null;
+  annual_revenue: number | null;
   founded_year: number | null;
   city_id: number;
   map_x: number | null;
@@ -521,8 +522,8 @@ export interface OrganizationUpdateFields {
 export function updateOrganizationAdmin(env: Env, id: number, fields: OrganizationUpdateFields): Promise<D1Result> {
   return env.DB.prepare(
     `UPDATE organizations
-     SET name = ?, kind = ?, status = ?, description = ?, industry = ?, employee_scale = ?, founded_year = ?,
-         city_id = ?, map_x = ?, map_y = ?, updated_at = ?
+     SET name = ?, kind = ?, status = ?, description = ?, industry = ?, employee_count = ?, annual_revenue = ?,
+         founded_year = ?, city_id = ?, map_x = ?, map_y = ?, updated_at = ?
      WHERE id = ?`
   )
     .bind(
@@ -531,7 +532,8 @@ export function updateOrganizationAdmin(env: Env, id: number, fields: Organizati
       fields.status,
       fields.description,
       fields.industry,
-      fields.employee_scale,
+      fields.employee_count,
+      fields.annual_revenue,
       fields.founded_year,
       fields.city_id,
       fields.map_x,
@@ -548,7 +550,8 @@ export interface OrganizationCreateFields {
   city_id: number;
   description: string | null;
   industry: string | null;
-  employee_scale: string | null;
+  employee_count: number | null;
+  annual_revenue: number | null;
   founded_year: number | null;
   map_x: number;
   map_y: number;
@@ -558,8 +561,8 @@ export async function createOrganization(env: Env, fields: OrganizationCreateFie
   const now = new Date().toISOString();
   const result = await env.DB.prepare(
     `INSERT INTO organizations
-       (name, kind, city_id, description, status, industry, employee_scale, founded_year, map_x, map_y, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`
+       (name, kind, city_id, description, status, industry, employee_count, annual_revenue, founded_year, map_x, map_y, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       fields.name,
@@ -567,7 +570,8 @@ export async function createOrganization(env: Env, fields: OrganizationCreateFie
       fields.city_id,
       fields.description,
       fields.industry,
-      fields.employee_scale,
+      fields.employee_count,
+      fields.annual_revenue,
       fields.founded_year,
       fields.map_x,
       fields.map_y,
