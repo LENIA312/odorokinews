@@ -116,7 +116,7 @@ app.get("/world", async (c) => {
 
 app.get("/people", async (c) => {
   const world = await getWorld(c.env);
-  const [people, orgs] = await Promise.all([listPeople(c.env, 60), listOrganizations(c.env)]);
+  const [people, orgs] = await Promise.all([listPeople(c.env, 200), listOrganizations(c.env)]);
   const orgById = new Map<number, OrganizationRow>((orgs.results ?? []).map((o) => [o.id, o]));
 
   return c.html(

@@ -73,6 +73,19 @@ npm run db:migrations:apply:remote
 npm run db:seed:remote
 ```
 
+### 3.5 人物データを追加したい場合（任意）
+
+`seed.sql` の12人に加えて、[scripts/generate_people.mjs](./scripts/generate_people.mjs) で
+既存の企業・都市に紐づく人物をまとめて生成できます。
+
+```bash
+node scripts/generate_people.mjs 100 > seed_more_people.sql
+npx wrangler d1 execute odorokinews-db --local  --file=./seed_more_people.sql
+npx wrangler d1 execute odorokinews-db --remote --file=./seed_more_people.sql
+```
+
+何度でも実行でき、実行するたびに新しい人物が追加されます（既存データは変更されません）。
+
 ### 4. ローカル開発
 
 ```bash
