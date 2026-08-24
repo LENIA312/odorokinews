@@ -324,8 +324,8 @@ app.put("/api/admin/settings", async (c) => {
   if (authError) return authError;
   const body = await c.req.json().catch(() => null);
   const times = body && Array.isArray(body.autoPublishTimes) ? body.autoPublishTimes : null;
-  if (!times || times.length === 0 || times.length > 8) {
-    return c.json({ error: "autoPublishTimes must be an array of 1-8 HH:MM strings" }, 400);
+  if (!times || times.length === 0 || times.length > 24) {
+    return c.json({ error: "autoPublishTimes must be an array of 1-24 HH:MM strings" }, 400);
   }
   const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
   if (!times.every((t: unknown) => typeof t === "string" && timeRe.test(t))) {
