@@ -1503,6 +1503,12 @@ app.post("/api/admin/organizations", async (c) => {
   if (!city) return c.json({ error: "invalid city_id" }, 400);
 
   const world = await getWorld(c.env);
+  // 創業年が世界暦より未来にならないようにクランプする（かつて種データの創業年が現実世界の
+  // 年表記のまま投入され、世界暦リセット後の現在(1900年前後)から見ると軒並み未来の創業に
+  // なってしまっていた不具合の再発防止、scripts/fix_future_founded_years.sql参照）。
+  const worldYear = world ? Number(world.current_date.slice(0, 4)) : null;
+  const clampedFoundedYear =
+    foundedYear != null && worldYear != null && foundedYear > worldYear ? worldYear : foundedYear;
   const [orgs, facilities] = await Promise.all([listOrganizations(c.env), listFacilities(c.env)]);
   const orgList = orgs.results ?? [];
   const facilityList = facilities.results ?? [];
@@ -1523,7 +1529,7 @@ app.post("/api/admin/organizations", async (c) => {
     industry,
     employee_count: employeeCount,
     annual_revenue: annualRevenue,
-    founded_year: foundedYear,
+    founded_year: clampedFoundedYear,
     map_x: pos.x,
     map_y: pos.y,
   });
@@ -1559,13 +1565,23 @@ app.put("/api/admin/organizations/:id", async (c) => {
     typeof body?.annualRevenue === "number" && Number.isFinite(body.annualRevenue) && body.annualRevenue >= 0
       ? Math.round(body.annualRevenue)
       : existing.annual_revenue;
-  const foundedYear =
-    typeof body?.foundedYear === "number" && Number.isInteger(body.foundedYear) ? body.foundedYear : null;
+  const foundedYearRaw =
+    typeof body?.foundedYear === "number" && Number.isInteger(body.foundedYear)
+      ? body.foundedYear
+      : existing.founded_year;
 
   const requestedCityId =
     typeof body?.city_id === "number" && Number.isInteger(body.city_id) ? body.city_id : existing.city_id ?? 1;
   const city = await getCity(c.env, requestedCityId);
   if (!city) return c.json({ error: "invalid city_id" }, 400);
+
+  // 創業年が世界暦より未来にならないようにクランプする（POSTルートと同じ理由）。
+  const worldForFoundedYear = await getWorld(c.env);
+  const worldYearForFoundedYear = worldForFoundedYear ? Number(worldForFoundedYear.current_date.slice(0, 4)) : null;
+  const foundedYear =
+    foundedYearRaw != null && worldYearForFoundedYear != null && foundedYearRaw > worldYearForFoundedYear
+      ? worldYearForFoundedYear
+      : foundedYearRaw;
 
   let mapX = existing.map_x;
   let mapY = existing.map_y;

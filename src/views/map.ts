@@ -181,7 +181,78 @@ function terrain(bounds: Bounds): string {
     '<rect x="' + (bounds.minX + 6) + '" y="' + (bounds.minY + 6) + '" width="' + (bounds.maxX - bounds.minX - 12) +
     '" height="' + (bounds.maxY - bounds.minY - 12) + '" fill="none" stroke="#c9bd9c" stroke-width="2"></rect>';
 
-  return hills + forest + marsh + coastline + river + bridges + compass + scaleBar + frame;
+  return hills + forest + marsh + coastline + river + bridges + compass + scaleBar + frame + scatterTerrain(bounds);
+}
+
+// 0〜1の疑似乱数を、座標から決定論的に求める（Math.randomではなく、同じboundsなら
+// 毎回同じ地形になるようにするため）。
+function hash2(x: number, y: number): number {
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+function forestClump(cx: number, cy: number, seed: number): string {
+  const n = 3 + Math.floor(seed * 4);
+  let out = '<g opacity="0.5">';
+  for (let i = 0; i < n; i++) {
+    const a = hash2(cx + i, cy - i) * Math.PI * 2;
+    const r = 20 + hash2(cx - i, cy + i) * 40;
+    const tx = cx + Math.cos(a) * r;
+    const ty = cy + Math.sin(a) * r * 0.6;
+    const tr = 12 + hash2(cx + i * 2, cy) * 12;
+    out += '<circle cx="' + Math.round(tx) + '" cy="' + Math.round(ty) + '" r="' + Math.round(tr) + '" fill="#4f8f63"></circle>';
+  }
+  return out + "</g>";
+}
+
+function hillPatch(cx: number, cy: number, seed: number): string {
+  const rx = 90 + seed * 90;
+  const ry = rx * 0.55;
+  return (
+    '<g opacity="0.45"><ellipse cx="' + Math.round(cx) + '" cy="' + Math.round(cy) + '" rx="' + Math.round(rx) +
+    '" ry="' + Math.round(ry) + '" fill="#cbbf9a"></ellipse></g>'
+  );
+}
+
+function grassPatch(cx: number, cy: number, seed: number): string {
+  const rx = 70 + seed * 60;
+  return (
+    '<g opacity="0.4"><ellipse cx="' + Math.round(cx) + '" cy="' + Math.round(cy) + '" rx="' + Math.round(rx) +
+    '" ry="' + Math.round(rx * 0.45) + '" fill="#9cb98f"></ellipse></g>'
+  );
+}
+
+// マップの表示範囲(bounds)は都市が増えるほど大きく広がっていくが、terrain()の川・丘・森は
+// 創業時からの「旧市街(NATURAL_BOUNDS)」に固定描画したままだった。都市が遠くに増えるたびに、
+// 手描きの地形がまばらな一角にしか無い状態になり「地形も一部しかなくて見ごたえがない」という
+// 不具合になっていた。旧市街の外側を格子状に走査し、セルごとに決定論的な疑似乱数で
+// 森・丘・草地・何も無し（空き地）を割り当てて薄く散らし、拡張された範囲全体に
+// それらしい地形があるように見せる。
+function scatterTerrain(bounds: Bounds): string {
+  const cell = 260;
+  const parts: string[] = [];
+  const startX = Math.floor(bounds.minX / cell) * cell;
+  const startY = Math.floor(bounds.minY / cell) * cell;
+  for (let gx = startX; gx < bounds.maxX; gx += cell) {
+    for (let gy = startY; gy < bounds.maxY; gy += cell) {
+      // 旧市街の範囲は既に手描きの地形があるので重ねて描かない。
+      if (gx > -150 && gx < 1550 && gy > -150 && gy < 1050) continue;
+      const h = hash2(gx, gy);
+      const jitterX = (hash2(gx + 1, gy) - 0.5) * cell * 0.6;
+      const jitterY = (hash2(gx, gy + 1) - 0.5) * cell * 0.6;
+      const cx = gx + cell / 2 + jitterX;
+      const cy = gy + cell / 2 + jitterY;
+      if (h < 0.22) {
+        parts.push(forestClump(cx, cy, h));
+      } else if (h < 0.4) {
+        parts.push(hillPatch(cx, cy, h));
+      } else if (h < 0.55) {
+        parts.push(grassPatch(cx, cy, h));
+      }
+      // それ以外(h>=0.55、約45%)は何も置かない空き地のまま。
+    }
+  }
+  return parts.join("");
 }
 
 // 施設同士を結ぶ道路網（格子ではなく、辺のリストとしてのグラフ）。
@@ -192,17 +263,22 @@ function roadNetwork(zoneById: Record<string, Zone>, edges: [string, string][]):
       const a = zoneById[edge[0]];
       const b = zoneById[edge[1]];
       if (!a || !b) return "";
-      const mx = (a.x + b.x) / 2;
-      const my = (a.y + b.y) / 2;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const len = Math.sqrt(dx * dx + dy * dy) || 1;
-      const bow = (i % 2 === 0 ? 1 : -1) * Math.min(28, len * 0.12);
-      const offX = (-dy / len) * bow;
-      const offY = (dx / len) * bow;
-      const cx = mx + offX;
-      const cy = my + offY;
-      const path = "M " + a.x + "," + a.y + " Q " + cx + "," + cy + " " + b.x + "," + b.y;
+      const nx = -dy / len;
+      const ny = dx / len;
+      // 経路長に比例した2つの制御点で三次ベジェのS字にうねらせる。以前は最大28px固定の
+      // 湾曲だったため、都市間をまたぐ長い道（数千px）では相対的にほぼ真っ直ぐにしか
+      // 見えなかった（「道が直線すぎる」不具合）。上限を大幅に上げ、経路長にきちんと
+      // 比例させることで、短い道は控えめに、長い道ほど自然にうねるようにする。
+      const bow = Math.min(220, len * 0.12);
+      const dir = i % 2 === 0 ? 1 : -1;
+      const p1x = a.x + dx * 0.33 + nx * bow * dir;
+      const p1y = a.y + dy * 0.33 + ny * bow * dir;
+      const p2x = a.x + dx * 0.67 - nx * bow * dir * 0.6;
+      const p2y = a.y + dy * 0.67 - ny * bow * dir * 0.6;
+      const path = "M " + a.x + "," + a.y + " C " + p1x + "," + p1y + " " + p2x + "," + p2y + " " + b.x + "," + b.y;
       return (
         '<path d="' + path + '" fill="none" stroke="#d8cfb8" stroke-width="9" stroke-linecap="round"></path>' +
         '<path d="' + path + '" fill="none" stroke="#efe9d8" stroke-width="1.8" stroke-dasharray="7 8" stroke-linecap="round"></path>'
