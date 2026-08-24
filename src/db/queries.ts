@@ -95,6 +95,11 @@ export function listTimeline(env: Env, limit = 100): Promise<D1Result<TimelineRo
     .all<TimelineRow>();
 }
 
+// 直近の重複判定・プロンプトへの詳細提示のため、要約と関係組織つきで取得する。
+export function listRecentEvents(env: Env, limit = 5): Promise<D1Result<EventRow>> {
+  return env.DB.prepare("SELECT * FROM events ORDER BY id DESC LIMIT ?").bind(limit).all<EventRow>();
+}
+
 export function listRecentSimulationRuns(env: Env, limit = 14): Promise<D1Result<SimulationRunRow>> {
   return env.DB.prepare("SELECT * FROM simulation_runs ORDER BY id DESC LIMIT ?")
     .bind(limit)

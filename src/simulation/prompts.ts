@@ -1,5 +1,5 @@
 import { ORG_STATUSES, PERSON_STATUSES } from "../constants";
-import type { OrganizationRow, PersonRow, TimelineRow } from "../types";
+import type { EventRow, OrganizationRow, PersonRow } from "../types";
 
 export interface WorldContext {
   worldName: string;
@@ -9,7 +9,7 @@ export interface WorldContext {
   targetDate: string;
   organizations: OrganizationRow[];
   people: PersonRow[];
-  recentTimeline: TimelineRow[];
+  recentEvents: EventRow[];
 }
 
 const EVENT_SYSTEM_PROMPT = `あなたは架空世界シミュレーションの「イベントAI」です。
@@ -31,6 +31,7 @@ const EVENT_SYSTEM_PROMPT = `あなたは架空世界シミュレーションの
   空配列にはしないこと。世界の状態とニュースの内容が食い違うことは許されない。`;
 
 export function buildEventPrompt(ctx: WorldContext): { system: string; user: string } {
+  const orgById = new Map(ctx.organizations.map((o) => [o.id, o]));
   const orgList = ctx.organizations
     .map((o) => `- id=${o.id} name="${o.name}" kind=${o.kind} status=${o.status}`)
     .join("\n");
@@ -38,9 +39,38 @@ export function buildEventPrompt(ctx: WorldContext): { system: string; user: str
     .slice(0, 24)
     .map((p) => `- id=${p.id} name="${p.name}" age=${p.age ?? "?"} occupation="${p.occupation ?? "不明"}"`)
     .join("\n");
-  const recent = ctx.recentTimeline.length
-    ? ctx.recentTimeline.map((t) => `- ${t.world_date}: ${t.headline}`).join("\n")
+
+  const parseOrgIds = (json: string | null): number[] => {
+    if (!json) return [];
+    try {
+      const arr = JSON.parse(json);
+      return Array.isArray(arr) ? arr.filter((v) => Number.isInteger(v)) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const recent = ctx.recentEvents.length
+    ? ctx.recentEvents
+        .map((e) => {
+          const orgNames = parseOrgIds(e.related_organizations)
+            .map((id) => orgById.get(id)?.name)
+            .filter(Boolean)
+            .join("、");
+          return `- ${e.world_date} [${e.event_type}]${orgNames ? ` (${orgNames})` : ""}: ${e.summary}`;
+        })
+        .join("\n")
     : "(まだ記録がない)";
+
+  const lastEventOrgNames = ctx.recentEvents.length
+    ? Array.from(
+        new Set(
+          parseOrgIds(ctx.recentEvents[0].related_organizations)
+            .map((id) => orgById.get(id)?.name)
+            .filter((n): n is string => Boolean(n))
+        )
+      )
+    : [];
 
   const user = `# 世界設定
 国名: ${ctx.worldName}
@@ -54,8 +84,9 @@ ${orgList || "(なし)"}
 # 参照可能な人物（一部抜粋）
 ${peopleList || "(なし)"}
 
-# 直近のイベント（重複を避けること）
+# 直近のイベント（新しい順、内容も含む。同じような話の繰り返しは絶対に避けること）
 ${recent}
+${lastEventOrgNames.length ? `\n直前のイベントは${lastEventOrgNames.join("、")}が主役だったため、今回は別の組織・別のテーマを主役にすること。` : ""}
 
 # 出力JSONスキーマ
 {

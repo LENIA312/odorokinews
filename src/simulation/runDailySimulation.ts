@@ -4,7 +4,8 @@ import {
   getWorld,
   listOrganizations,
   listPeople,
-  listTimeline,
+  listRecentEvents,
+  parseIdArray,
   previousEconomicValue,
 } from "../db/queries";
 import { nextWorldDate } from "../utils/date";
@@ -59,18 +60,18 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
   let aiCallsUsed = 0;
 
   try {
-    const [city, orgsResult, peopleResult, timelineResult] = await Promise.all([
+    const [city, orgsResult, peopleResult, recentEventsResult] = await Promise.all([
       getCity(env, 1),
       listOrganizations(env),
       listPeople(env, 40),
-      listTimeline(env, 5),
+      listRecentEvents(env, 5),
     ]);
     if (!city) {
       throw new Error("cities レコードが存在しない。seed.sql の投入を確認してください。");
     }
     const organizations = orgsResult.results ?? [];
     const people = peopleResult.results ?? [];
-    const recentTimeline = timelineResult.results ?? [];
+    const recentEvents = recentEventsResult.results ?? [];
 
     const cityId = city.id;
     const cityName = city.name;
@@ -80,6 +81,13 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
     const allowedPersonIds = new Set(people.map((p) => p.id));
     const allowedOrgIds = new Set(organizations.map((o) => o.id));
 
+    // 直前のイベントと同じ組織が「今回も主役」になるのを防ぐ
+    // （小型モデルはプロンプトの「重複を避けよ」を守りきれないことがあるため、
+    // 仕組み側でも直近1件との重複を機械的に弾く）。
+    const lastEventOrgIds = new Set(
+      recentEvents.length > 0 ? parseIdArray(recentEvents[0].related_organizations) : []
+    );
+
     let eventDraft: ValidatedEventDraft;
     let newsDraft: ValidatedNewsDraft | null = null;
     let source: "ai" | "fallback_template" = "fallback_template";
@@ -88,9 +96,13 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
 
     // フォールバックは一度だけ生成し、必要になったら使い回す
     // （複数箇所で呼ぶと毎回別のランダムな出来事になってしまうため）。
+    // 直前のイベントと同じ組織が選ばれないよう、候補から除外しておく。
+    const fallbackOrgs = organizations.filter((o) => !lastEventOrgIds.has(o.id));
     let fallback: ReturnType<typeof generateFallbackEventAndNews> | null = null;
     const getFallback = () => {
-      if (!fallback) fallback = generateFallbackEventAndNews(cityName, organizations, people);
+      if (!fallback) {
+        fallback = generateFallbackEventAndNews(cityName, fallbackOrgs.length ? fallbackOrgs : organizations, people);
+      }
       return fallback;
     };
 
@@ -103,12 +115,14 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
         targetDate,
         organizations,
         people,
-        recentTimeline,
+        recentEvents,
       });
       const aiResult = await callAiForJson(env, env.AI_EVENT_MODEL, system, user);
       aiCallsUsed++;
       const validated = aiResult.ok ? validateEventDraft(aiResult.json, allowedPersonIds, allowedOrgIds) : null;
-      if (validated) {
+      const repeatsLastEvent =
+        validated != null && validated.related_organization_ids.some((id) => lastEventOrgIds.has(id));
+      if (validated && !repeatsLastEvent) {
         eventDraft = validated;
         source = "ai";
       } else {
