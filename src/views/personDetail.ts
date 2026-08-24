@@ -1,6 +1,6 @@
 import { html, raw, RawHtml } from "../utils/html";
 import { formatWorldDateJa } from "../utils/date";
-import { PERSON_STATUS_LABEL, RELATION_TYPE_LABEL } from "../constants";
+import { GENDER_LABEL, PERSON_STATUS_LABEL, RELATION_TYPE_LABEL } from "../constants";
 import type { CityRow, NewsRow, OrganizationRow, PersonRow, RelationshipRow } from "../types";
 
 function formatIncome(value: number | null): string {
@@ -98,7 +98,7 @@ export function personDetailView(
       </p>
       <table class="plain" style="margin-top:0.8rem">
         <tr><th>年齢</th><td>${person.age ?? "不明"}</td></tr>
-        <tr><th>性別</th><td>${person.gender ?? "不明"}</td></tr>
+        <tr><th>性別</th><td>${person.gender ? GENDER_LABEL[person.gender] ?? person.gender : "不明"}</td></tr>
         <tr><th>生年月日</th><td>${person.birth_date ? formatWorldDateJa(person.birth_date) : "不明"}</td></tr>
         <tr><th>生まれ</th><td>${person.birthplace ?? "不明"}</td></tr>
         <tr><th>居住地</th><td>${city?.name ?? "不明"}</td></tr>

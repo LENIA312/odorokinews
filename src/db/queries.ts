@@ -82,11 +82,17 @@ export interface FacilityUpdateFields {
   name: string;
   kind: string;
   description: string | null;
+  city_id: number;
+  map_x: number;
+  map_y: number;
 }
 
 export function updateFacility(env: Env, id: number, fields: FacilityUpdateFields): Promise<D1Result> {
-  return env.DB.prepare("UPDATE facilities SET name = ?, kind = ?, description = ?, updated_at = ? WHERE id = ?")
-    .bind(fields.name, fields.kind, fields.description, new Date().toISOString(), id)
+  return env.DB.prepare(
+    `UPDATE facilities SET name = ?, kind = ?, description = ?, city_id = ?, map_x = ?, map_y = ?, updated_at = ?
+     WHERE id = ?`
+  )
+    .bind(fields.name, fields.kind, fields.description, fields.city_id, fields.map_x, fields.map_y, new Date().toISOString(), id)
     .run();
 }
 
@@ -462,12 +468,16 @@ export interface OrganizationUpdateFields {
   industry: string | null;
   employee_scale: string | null;
   founded_year: number | null;
+  city_id: number;
+  map_x: number | null;
+  map_y: number | null;
 }
 
 export function updateOrganizationAdmin(env: Env, id: number, fields: OrganizationUpdateFields): Promise<D1Result> {
   return env.DB.prepare(
     `UPDATE organizations
-     SET name = ?, kind = ?, status = ?, description = ?, industry = ?, employee_scale = ?, founded_year = ?, updated_at = ?
+     SET name = ?, kind = ?, status = ?, description = ?, industry = ?, employee_scale = ?, founded_year = ?,
+         city_id = ?, map_x = ?, map_y = ?, updated_at = ?
      WHERE id = ?`
   )
     .bind(
@@ -478,6 +488,9 @@ export function updateOrganizationAdmin(env: Env, id: number, fields: Organizati
       fields.industry,
       fields.employee_scale,
       fields.founded_year,
+      fields.city_id,
+      fields.map_x,
+      fields.map_y,
       new Date().toISOString(),
       id
     )

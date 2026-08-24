@@ -64,18 +64,59 @@ export const ORG_STATUSES = [
 ] as const;
 export type OrgStatus = (typeof ORG_STATUSES)[number];
 
+export const ORG_STATUS_LABEL: Record<string, string> = {
+  active: "通常",
+  expanding: "拡大中",
+  under_investigation: "調査中",
+  recovering: "回復中",
+  celebrating: "好調",
+  bankrupt: "倒産",
+};
+
 export const ORG_KINDS = ["company", "government", "school", "other"] as const;
 export type OrgKind = (typeof ORG_KINDS)[number];
+
+export const ORG_KIND_LABEL: Record<string, string> = {
+  company: "企業",
+  government: "行政",
+  school: "学校",
+  other: "その他",
+};
 
 // 施設(雇用主ではない公共・生活系のゾーン)の種別。住宅街・大学・公園・商店街は
 // 従来mapZones.tsにハードコードしていたダイナン市の固定ゾーンをこのkindへ移行したもの。
 export const FACILITY_KINDS = ["residential", "university", "park", "shopping_street", "other"] as const;
 export type FacilityKind = (typeof FACILITY_KINDS)[number];
 
+export const FACILITY_KIND_LABEL: Record<string, string> = {
+  residential: "住宅街",
+  university: "大学",
+  park: "公園",
+  shopping_street: "商店街",
+  other: "その他",
+};
+
 // draft: 管理画面で作成済みだが、まだ生成対象に含めない都市。
 // active: 今後のシミュレーション生成で使用される都市。
 export const CITY_STATUSES = ["active", "draft"] as const;
 export type CityStatus = (typeof CITY_STATUSES)[number];
+
+export const CITY_STATUS_LABEL: Record<string, string> = {
+  active: "稼働中",
+  draft: "準備中",
+};
+
+// 性別はAIが自由記述で生成する項目のため、DB上は英語の代表値(male/female/other)に
+// 揃わない自由文字列が入る可能性がある。GENDER_OPTIONSは管理画面のプルダウンで
+// 使う既知の選択肢、GENDER_LABELは表示用の変換（未知の値は元の文字列をそのまま出す）。
+export const GENDER_OPTIONS = ["male", "female", "other"] as const;
+export type Gender = (typeof GENDER_OPTIONS)[number];
+
+export const GENDER_LABEL: Record<string, string> = {
+  male: "男性",
+  female: "女性",
+  other: "その他",
+};
 
 export const WEATHER_CONDITIONS = [
   "晴れ",

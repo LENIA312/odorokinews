@@ -173,7 +173,7 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron
 | id | INTEGER PK | 0001 | |
 | name | TEXT | 0001 | |
 | kind | TEXT | 0001 | `ORG_KINDS`: company / government / school / other |
-| city_id | INTEGER? FK→cities | 0001 | 所属都市。企業作成時に指定可能（デフォルト1）。管理画面・イベントAI(`new_organizations`)どちらから作成時も指定される |
+| city_id | INTEGER? FK→cities | 0001 | 所属都市。企業作成時に指定可能（デフォルト1）。管理画面・イベントAI(`new_organizations`)どちらから作成時も指定される。編集での変更も可（8.3節。変更時は座標を新都市付近へ再計算） |
 | description | TEXT? | 0001 | |
 | status | TEXT | 0001 | `ORG_STATUSES`: active / expanding / under_investigation / recovering / celebrating / bankrupt |
 | industry | TEXT? | 0004 | 業種（例: 製造・造船） |
@@ -196,7 +196,7 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron
 | id | INTEGER PK | |
 | name | TEXT | |
 | kind | TEXT | `FACILITY_KINDS`: residential / university / park / shopping_street / other |
-| city_id | INTEGER NOT NULL FK→cities | 所属都市。管理画面から指定可能（作成後の変更は不可） |
+| city_id | INTEGER NOT NULL FK→cities | 所属都市。管理画面から指定可能。編集での変更も可（8.3節。変更時は座標を新都市付近へ再計算） |
 | description | TEXT? | |
 | map_x / map_y | REAL NOT NULL | 地図上の座標。新規作成時は`assignZonePositionForCity`で自動配置 |
 | created_at / updated_at | TEXT | |
@@ -268,7 +268,7 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 |---|---|---|
 | id | INTEGER PK | |
 | title / body | TEXT | |
-| published_at | TEXT | 実時刻（記事が公開された実際の日時） |
+| published_at | TEXT | 実時刻（記事が公開された実際の日時、UTCのISO文字列で保存） |
 | occurred_at | TEXT | 世界暦（`events.world_date`と同じ値を入れる） |
 | category | TEXT | `NEWS_CATEGORIES` のいずれか |
 | related_people / related_organizations | TEXT | JSON配列（ID） |
@@ -337,6 +337,14 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 > **SQLのサブクエリに頼らず、事前にAPI等で確認した値をリテラルとしてSQLに埋め込む**こと。
 > `scripts/fix_birth_date_reference.sql`が実際の訂正に使ったパターン。
 
+> **運用上の注意（掲載時刻はJSTへ変換して表示する）**: `news.published_at`はUTCのISO文字列で
+> 保存される（Workersの`new Date()`は常にUTC）。`formatDateTimeJa`（`src/utils/date.ts`）は
+> 以前`getUTCHours()`等でそのままUTC時刻を表示しており、読者が想定する日本時間より9時間早い
+> 掲載時刻が表示されるバグがあった。修正後は表示直前に9時間を加算してからUTC系ゲッターで
+> 取り出す（＝JST変換してから「UTC」ゲッターを使う、というトリック）。新しく日時を表示する
+> コードを書く場合は必ず`formatDateTimeJa`を経由し、`published_at`等のUTC値を素の`getUTCHours`
+> 等で直接表示しないこと。
+
 ### 4.3 主要な定数（`src/constants.ts`）
 
 | 定数 | 値 |
@@ -345,9 +353,16 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 | `PERSON_STATUSES` | alive, sick, injured, hospitalized, deceased, celebrating, under_investigation |
 | `PERSON_STATUS_LABEL` | 上記の日本語ラベル（例: sick→療養中）。people.ts/personDetail.ts/map.tsで共通利用 |
 | `ORG_STATUSES` | active, expanding, under_investigation, recovering, celebrating, bankrupt |
+| `ORG_STATUS_LABEL` | 上記の日本語ラベル（例: bankrupt→倒産）。economy.ts/admin.tsで共通利用 |
 | `ORG_KINDS` | company, government, school, other |
+| `ORG_KIND_LABEL` | 上記の日本語ラベル（例: company→企業） |
 | `CITY_STATUSES` | active, draft |
+| `CITY_STATUS_LABEL` | 上記の日本語ラベル（active→稼働中, draft→準備中） |
 | `FACILITY_KINDS` | residential, university, park, shopping_street, other |
+| `FACILITY_KIND_LABEL` | 上記の日本語ラベル（例: residential→住宅街） |
+| `GENDER_OPTIONS` | male, female, other（管理画面のプルダウンで使う既知の選択肢） |
+| `GENDER_LABEL` | 上記の日本語ラベル（male→男性等）。性別はAIが自由記述で生成するため、
+  未知の値は`GENDER_LABEL[value] ?? value`で元の文字列をそのまま表示するフォールバックが前提 |
 | `WEATHER_CONDITIONS` | 晴れ, 曇り, 雨, 雷雨, 霧, 雪, 強風, 魔力嵐 |
 | `RELATION_TYPES` | family_parent, family_child, family_sibling, spouse, colleague, friend |
 | `RELATION_TYPE_LABEL` | 上記の日本語ラベル（親/子/兄弟姉妹/配偶者/同僚/友人） |
@@ -355,6 +370,9 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 
 これらはDBの生値バリデーション・プロンプトへの列挙・管理画面のセレクトボックス生成すべての
 唯一のソースなので、値を増減する場合はここを変更するだけでよい設計になっている。
+状態・種別・性別はDBには一貫して英語の内部値（`active`/`company`/`male`等）で保存し、
+**表示直前に`_LABEL`マップで日本語へ変換する**方針で統一している（DBスキーマやAIプロンプトの
+enum値は変えず、UIだけ日本語化することで両立させている）。
 
 ---
 
@@ -681,6 +699,10 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 
 - 企業作成: 所在都市を選択可能（デフォルト1=ダイナン市）。地図上の座標は7.2節の
   `assignZonePositionForCity`（同都市の既存組織+施設を基準）で自動決定。
+  **企業編集でも所在都市を変更可能**（当初は編集フォームで都市欄を隠していたため既存企業の
+  都市を直せない不具合があった。修正後は編集時も都市欄を表示し、都市を変更した場合のみ
+  `assignZonePositionForCity`で新都市のクラスタ付近へ座標を再計算する。都市を変更しない場合は
+  既存の座標をそのまま維持する）。
 - 都市作成: デフォルトは`draft`。地図上の内部拠点座標(`map_x`/`map_y`)は`assignNewCityPosition`で
   自動決定。`id=1`を`draft`には戻せない（サーバー側でガード）。**作成と同時に住宅街+商店街の
   施設2件が自動生成される**（`assignZonePositionForCity`を順に呼び、既に置いた施設も基準点に
@@ -688,9 +710,10 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
   伴った街並みとして地図に現れる、という7章冒頭の方針転換に対応する変更。
 - 施設作成 (`POST /api/admin/facilities`): 名前・種別（`FACILITY_KINDS`）・所在都市・説明を指定。
   座標は`assignZonePositionForCity`で自動決定（都市選択後、その都市に絞り込まれた一覧に反映）。
-  施設編集 (`PUT /api/admin/facilities/:id`) は名前・種別・説明のみ変更可（`city_id`は作成後
-  不変。都市をまたいで移動させるユースケースを現状想定していないため）。**削除エンドポイントは
-  意図的に用意していない**（施設が消えると`assignPersonZones`の自宅/勤務先参照が壊れるため）。
+  **施設編集でも所在都市を変更可能**（企業編集と同じ理由・同じロジックで修正。当初「city_idは
+  作成後不変」としていた設計判断を撤回し、都市変更時のみ座標を再計算する方式にした）。
+  **削除エンドポイントは意図的に用意していない**（施設が消えると`assignPersonZones`の
+  自宅/勤務先参照が壊れるため）。
 - 人物作成: 所在都市を選択可能。`origin='admin_manual'`として記録。役職・年収・生年月日・生まれも
   作成時から指定可能（4.1節参照）。職業は8.5節の職業タイプから選択する（未登録の値も保持される）。
 
@@ -931,3 +954,13 @@ npm run tail
   イベントAIが`new_organizations`/`new_facilities`（都市IDが一致する場合のみ受理）を提案できる
   ようプロンプト・バリデーションを拡張（6.2節・9章）。ユーザー自身が事前に作成していた都市
   「ハノシダ」にも施設2件を遡及的に追加（`scripts/backfill_existing_city_facilities.sql`）。
+- 2026-08-25: 管理画面の職業タイプ管理パネルがスタイル未定義（`.chip`/`.chip-row`がCSSに
+  存在しなかった）で見た目が崩れていた不具合を修正。企業一覧に「種別」列を追加。企業・施設の
+  編集フォームで所在都市を変更できるよう修正（従来は編集時に都市欄を隠しており、既存の企業・
+  施設の都市を直せなかった。都市を変更した場合のみ`assignZonePositionForCity`で座標を
+  再計算、4.1節・8.3節）。人物の状態・性別、企業の状態・種別、都市の状態が管理画面や人物詳細
+  ページで英語のまま表示されていたのを`ORG_STATUS_LABEL`/`ORG_KIND_LABEL`/`CITY_STATUS_LABEL`/
+  `GENDER_LABEL`を新設して日本語表示に統一（4.3節。DB上の値は英語のまま、表示層でのみ変換する
+  方針）。ニュースの「掲載」時刻が実際のJST時刻よりちょうど9時間早く表示されるバグを修正
+  （`formatDateTimeJa`がUTCの`published_at`をそのままUTCゲッターで表示していたため。4.2節に
+  教訓を記載）。

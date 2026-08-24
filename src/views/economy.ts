@@ -1,14 +1,6 @@
 import { html, raw, RawHtml } from "../utils/html";
+import { ORG_STATUS_LABEL } from "../constants";
 import type { EconomicDataRow, OrganizationRow } from "../types";
-
-const ORG_STATUS_LABEL: Record<string, string> = {
-  active: "通常",
-  expanding: "拡大中",
-  under_investigation: "調査中",
-  recovering: "回復中",
-  celebrating: "好調",
-  bankrupt: "倒産",
-};
 
 export function economyView(
   organizations: OrganizationRow[],

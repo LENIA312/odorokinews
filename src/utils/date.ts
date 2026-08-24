@@ -34,10 +34,15 @@ export function computeBirthDateFromAge(referenceDate: string, age: number | nul
   return base.toISOString().slice(0, 10);
 }
 
+// published_atはUTCのISO文字列で保存されている（Workersのnew Date()は常にUTC）。
+// サイトの読者は日本時間を前提にしているため、表示直前にJST(UTC+9)へ変換する
+// （以前はUTCのままgetUTCHours等で表示しており、実際の掲載時刻より9時間早い時刻が
+// 表示されるバグがあった）。
 export function formatDateTimeJa(isoStr: string): string {
   const dt = new Date(isoStr);
   if (Number.isNaN(dt.getTime())) return isoStr;
-  return `${dt.getUTCFullYear()}年${dt.getUTCMonth() + 1}月${dt.getUTCDate()}日 ${String(
-    dt.getUTCHours()
-  ).padStart(2, "0")}:${String(dt.getUTCMinutes()).padStart(2, "0")}`;
+  const jst = new Date(dt.getTime() + 9 * 60 * 60 * 1000);
+  return `${jst.getUTCFullYear()}年${jst.getUTCMonth() + 1}月${jst.getUTCDate()}日 ${String(
+    jst.getUTCHours()
+  ).padStart(2, "0")}:${String(jst.getUTCMinutes()).padStart(2, "0")}`;
 }

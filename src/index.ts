@@ -619,7 +619,34 @@ app.put("/api/admin/facilities/:id", async (c) => {
       ? body.description.trim().slice(0, 200)
       : existing.description;
 
-  await updateFacility(c.env, id, { name, kind, description });
+  const requestedCityId =
+    typeof body?.city_id === "number" && Number.isInteger(body.city_id) ? body.city_id : existing.city_id;
+  const city = await getCity(c.env, requestedCityId);
+  if (!city) return c.json({ error: "invalid city_id" }, 400);
+
+  let mapX = existing.map_x;
+  let mapY = existing.map_y;
+  if (city.id !== existing.city_id) {
+    // 所在都市を変更した場合、その都市のクラスタ付近へ座標を再割り当てする（7.2節のロジック）。
+    const [orgs, facilities] = await Promise.all([listOrganizations(c.env), listFacilities(c.env)]);
+    const orgList = orgs.results ?? [];
+    const facilityList = (facilities.results ?? []).filter((f) => f.id !== id);
+    const zones = buildAllZones(orgList, facilityList);
+    const sameCityZonePoints = [
+      ...orgList.filter((o) => o.city_id === city.id && o.map_x != null && o.map_y != null)
+        .map((o) => ({ x: o.map_x as number, y: o.map_y as number })),
+      ...facilityList.filter((f) => f.city_id === city.id).map((f) => ({ x: f.map_x, y: f.map_y })),
+    ];
+    const pos = assignZonePositionForCity(
+      city,
+      zones.map((z) => ({ x: z.x, y: z.y })),
+      sameCityZonePoints
+    );
+    mapX = pos.x;
+    mapY = pos.y;
+  }
+
+  await updateFacility(c.env, id, { name, kind, description, city_id: city.id, map_x: mapX, map_y: mapY });
   return c.json({ ok: true });
 });
 
@@ -1348,6 +1375,7 @@ app.get("/api/admin/economy-list", async (c) => {
       name: o.name,
       kind: o.kind,
       status: o.status,
+      city_id: o.city_id,
       description: o.description,
       industry: o.industry,
       employeeScale: o.employee_scale,
@@ -1438,6 +1466,33 @@ app.put("/api/admin/organizations/:id", async (c) => {
   const foundedYear =
     typeof body?.foundedYear === "number" && Number.isInteger(body.foundedYear) ? body.foundedYear : null;
 
+  const requestedCityId =
+    typeof body?.city_id === "number" && Number.isInteger(body.city_id) ? body.city_id : existing.city_id ?? 1;
+  const city = await getCity(c.env, requestedCityId);
+  if (!city) return c.json({ error: "invalid city_id" }, 400);
+
+  let mapX = existing.map_x;
+  let mapY = existing.map_y;
+  if (city.id !== existing.city_id) {
+    // 所在都市を変更した場合、その都市のクラスタ付近へ座標を再割り当てする（7.2節のロジック）。
+    const [orgs, facilities] = await Promise.all([listOrganizations(c.env), listFacilities(c.env)]);
+    const orgList = (orgs.results ?? []).filter((o) => o.id !== id);
+    const facilityList = facilities.results ?? [];
+    const zones = buildAllZones(orgList, facilityList);
+    const sameCityZonePoints = [
+      ...orgList.filter((o) => o.city_id === city.id && o.map_x != null && o.map_y != null)
+        .map((o) => ({ x: o.map_x as number, y: o.map_y as number })),
+      ...facilityList.filter((f) => f.city_id === city.id).map((f) => ({ x: f.map_x, y: f.map_y })),
+    ];
+    const pos = assignZonePositionForCity(
+      city,
+      zones.map((z) => ({ x: z.x, y: z.y })),
+      sameCityZonePoints
+    );
+    mapX = pos.x;
+    mapY = pos.y;
+  }
+
   await updateOrganizationAdmin(c.env, id, {
     name,
     kind,
@@ -1446,6 +1501,9 @@ app.put("/api/admin/organizations/:id", async (c) => {
     industry,
     employee_scale: employeeScale,
     founded_year: foundedYear,
+    city_id: city.id,
+    map_x: mapX,
+    map_y: mapY,
   });
 
   // 倒産(bankrupt)になった場合、そこに勤めていた人物を無所属に戻す。
