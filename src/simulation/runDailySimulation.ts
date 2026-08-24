@@ -1,23 +1,36 @@
 import type { Env } from "../types";
 import {
+  createCity,
   createFacility,
   createOrganization,
   getCity,
   getRandomReporterId,
   getWorld,
   listActiveCities,
+  listCities,
+  listFacilities,
   listFacilitiesByCity,
+  listOrganizations,
   listOrganizationsByCity,
   listPeopleByCity,
   listRecentEvents,
+  logAiCall,
   previousEconomicValue,
   parseIdArray,
 } from "../db/queries";
-import { computeBirthDateFromAge, nextWorldDate } from "../utils/date";
-import { assignZonePositionForCity } from "../views/mapZones";
+import { MAX_TOTAL_CITIES } from "../constants";
+import { computeBirthDateFromAge } from "../utils/date";
+import { assignNewCityPosition, assignZonePositionForCity } from "../views/mapZones";
+import { seedStarterFacilities } from "./citySeed";
 import { callAiForJson } from "./ai";
 import { buildEventPrompt, buildNewsPrompt } from "./prompts";
-import { validateEventDraft, validateNewsDraft, type ValidatedEventDraft, type ValidatedNewsDraft } from "./validate";
+import {
+  summarizeEventDraftForLog,
+  validateEventDraft,
+  validateNewsDraft,
+  type ValidatedEventDraft,
+  type ValidatedNewsDraft,
+} from "./validate";
 import { generateFallbackEventAndNews, padShortArticleBody } from "./fallback";
 import { applyStateChanges } from "./stateChanges";
 
@@ -43,19 +56,10 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
     throw new Error("world レコードが存在しない。seed.sql の投入を確認してください。");
   }
 
-  const targetDate = nextWorldDate(world.current_date);
-
-  const existingRun = await env.DB.prepare("SELECT * FROM simulation_runs WHERE world_date = ?")
-    .bind(targetDate)
-    .first<{ id: number; status: string }>();
-
-  if (existingRun?.status === "success") {
-    return { skipped: true, reason: "already_processed", worldDate: targetDate };
-  }
-  if (existingRun) {
-    // 前回失敗 or 異常終了した実行。再試行のため古い記録を削除する。
-    await env.DB.prepare("DELETE FROM simulation_runs WHERE id = ?").bind(existingRun.id).run();
-  }
+  // 世界暦は配信とは独立してworldClock.tsのtickWorldDate()が現実1時間ごとに進めるため、
+  // ここでは「今の世界暦」をそのまま出来事の発生日として使う（+1日はしない）。
+  // 同じ世界暦の日に複数回ニュースが生成されることは正当にありうる（0010マイグレーション参照）。
+  const targetDate = world.current_date;
 
   const startedAt = now();
   await env.DB.prepare(
@@ -77,6 +81,11 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
     if (!city) {
       throw new Error("cities レコードが存在しない。seed.sql の投入を確認してください。");
     }
+
+    // 都市の誕生は非常に大きな出来事なので、既存+draft含めた総数がまだ上限未満の場合のみ
+    // イベントAIへ new_city の提案を許可する（乱発防止、9章参照）。
+    const allCitiesResult = await listCities(env);
+    const canCreateCity = (allCitiesResult.results?.length ?? 0) < MAX_TOTAL_CITIES;
 
     const [orgsResult, facilitiesResult, peopleResult, recentEventsResult] = await Promise.all([
       listOrganizationsByCity(env, city.id),
@@ -134,14 +143,34 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
         organizations,
         people,
         recentEvents,
+        canCreateCity,
       });
       const aiResult = await callAiForJson(env, env.AI_EVENT_MODEL, system, user);
       aiCallsUsed++;
-      const validated = aiResult.ok ? validateEventDraft(aiResult.json, allowedPersonIds, allowedOrgIds, cityId) : null;
+      const validated = aiResult.ok
+        ? validateEventDraft(aiResult.json, allowedPersonIds, allowedOrgIds, cityId, canCreateCity)
+        : null;
       const repeatsLastEvent =
         validated != null && validated.related_organization_ids.some((id) => lastEventOrgIds.has(id));
-      if (validated && !repeatsLastEvent) {
-        eventDraft = validated;
+      const eventAccepted = validated != null && !repeatsLastEvent;
+      await logAiCall(env, {
+        callType: "daily_event",
+        model: env.AI_EVENT_MODEL,
+        systemPrompt: system,
+        userPrompt: user,
+        rawResponse: aiResult.raw ?? null,
+        success: eventAccepted,
+        error: !aiResult.ok
+          ? aiResult.error ?? "AI呼び出し失敗"
+          : !validated
+            ? "バリデーション失敗（不正なJSON構造）"
+            : repeatsLastEvent
+              ? "直前イベントと同じ組織が主役のため却下"
+              : null,
+        changesSummary: eventAccepted ? summarizeEventDraftForLog(validated as ValidatedEventDraft) : null,
+      });
+      if (eventAccepted) {
+        eventDraft = validated as ValidatedEventDraft;
         source = "ai";
       } else {
         eventDraft = getFallback().event;
@@ -224,6 +253,33 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       zonePoints.push(pos);
     }
 
+    // AIが新しい都市の誕生を提案した場合、都市自体をDBへ作成する（validateEventDraftで
+    // canCreateCity/説明文の長さを検証済み）。管理画面からの手動作成と同様、draft状態で
+    // 作成し住宅街+商店街の施設も自動生成する。都市はダイナン市に限らずどの都市の出来事からも
+    // 誕生しうるが、地図上の拠点座標は「全都市を横断した全ゾーン」を基準に配置する
+    // （このイベントの舞台都市だけを基準にすると、常にその近くに現れてしまうため）。
+    let newCityId: number | null = null;
+    if (eventDraft.new_city) {
+      const [allOrgsResult, allFacilitiesResult] = await Promise.all([listOrganizations(env), listFacilities(env)]);
+      const allZonePoints = [
+        ...(allOrgsResult.results ?? [])
+          .filter((o) => o.map_x != null && o.map_y != null)
+          .map((o) => ({ x: o.map_x as number, y: o.map_y as number })),
+        ...(allFacilitiesResult.results ?? []).map((f) => ({ x: f.map_x, y: f.map_y })),
+      ];
+      const cityPos = assignNewCityPosition(allZonePoints);
+      newCityId = await createCity(env, {
+        name: eventDraft.new_city.name,
+        population: eventDraft.new_city.population,
+        description: eventDraft.new_city.description,
+        industries: JSON.stringify(eventDraft.new_city.industries),
+        status: "draft",
+        map_x: cityPos.x,
+        map_y: cityPos.y,
+      });
+      await seedStarterFacilities(env, newCityId, eventDraft.new_city.name, cityPos);
+    }
+
     const relatedPeopleIds = [...eventDraft.related_person_ids, ...createdPeopleIds];
     const relatedPeopleNames = [
       ...people.filter((p) => eventDraft.related_person_ids.includes(p.id)).map((p) => p.name),
@@ -299,8 +355,21 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       );
       const newsAiResult = await callAiForJson(env, env.AI_NEWS_MODEL, system, user, 1600);
       aiCallsUsed++;
-      if (newsAiResult.ok) {
-        newsDraft = validateNewsDraft(newsAiResult.json);
+      const newsValidated = newsAiResult.ok ? validateNewsDraft(newsAiResult.json) : null;
+      await logAiCall(env, {
+        callType: "daily_news",
+        model: env.AI_NEWS_MODEL,
+        systemPrompt: system,
+        userPrompt: user,
+        rawResponse: newsAiResult.raw ?? null,
+        success: newsValidated != null,
+        error: !newsAiResult.ok ? newsAiResult.error ?? "AI呼び出し失敗" : !newsValidated ? "バリデーション失敗" : null,
+        changesSummary: newsValidated
+          ? { title: newsValidated.title, category: newsValidated.category, bodyLength: newsValidated.body.length }
+          : null,
+      });
+      if (newsValidated) {
+        newsDraft = newsValidated;
       }
     }
 
@@ -344,19 +413,32 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
     const newsId = newsInsert.meta.last_row_id as number;
 
     await env.DB.prepare("UPDATE events SET news_id = ? WHERE id = ?").bind(newsId, eventId).run();
-    await env.DB.prepare(
-      "INSERT INTO timeline (world_date, event_id, headline, created_at) VALUES (?, ?, ?, ?)"
-    )
-      .bind(targetDate, eventId, newsDraft.title, now())
-      .run();
+
+    // 年表は「毎回のニュース履歴」ではなく、世界の状態に実際に影響があった/新しい人物・組織・
+    // 施設・都市が生まれた等、後から振り返って意味のある出来事だけを追記する
+    // （state_changesが空で、新規作成物も無い出来事は、日常の些細な一コマとして
+    // ニュース記事にはなるが年表には残さない）。
+    const isSignificant =
+      appliedImpact.length > 0 ||
+      createdPeopleIds.length > 0 ||
+      createdOrgIds.length > 0 ||
+      eventDraft.new_facilities.length > 0 ||
+      newCityId != null;
+    if (isSignificant) {
+      await env.DB.prepare(
+        "INSERT INTO timeline (world_date, event_id, headline, created_at) VALUES (?, ?, ?, ?)"
+      )
+        .bind(targetDate, eventId, newsDraft.title, now())
+        .run();
+    }
 
     // 天候もイベントAI(またはフォールバック時は現状維持)に管理を任せる。晴れ→曇り→雨のような
     // 段階を踏んだ推移をプロンプト側で指示しているため、ここでは提案された値をそのまま反映する。
+    // current_dateはここでは進めない（worldClock.tsのtickWorldDate()が現実1時間ごとに
+    // 独立して進める。配信と世界暦の進行を切り離すため）。
     const nextWeather = eventDraft.weather ?? world.weather;
-    await env.DB.prepare(
-      "UPDATE world SET current_date = ?, last_published_at = ?, weather = ?, updated_at = ? WHERE id = 1"
-    )
-      .bind(targetDate, now(), nextWeather, now())
+    await env.DB.prepare("UPDATE world SET last_published_at = ?, weather = ?, updated_at = ? WHERE id = 1")
+      .bind(now(), nextWeather, now())
       .run();
 
     await env.DB.prepare(

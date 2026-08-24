@@ -1,4 +1,5 @@
 import type {
+  AiCallLogRow,
   CityRow,
   EconomicDataRow,
   Env,
@@ -651,4 +652,47 @@ export function updateOccupationType(env: Env, id: number, name: string): Promis
 
 export function deleteOccupationType(env: Env, id: number): Promise<D1Result> {
   return env.DB.prepare("DELETE FROM occupation_types WHERE id = ?").bind(id).run();
+}
+
+// ---- AI呼び出し履歴（管理画面「AI履歴」タブ用） ----
+
+export interface AiCallLogInput {
+  callType: string;
+  model: string;
+  systemPrompt: string;
+  userPrompt: string;
+  rawResponse: string | null;
+  success: boolean;
+  error: string | null;
+  changesSummary: unknown; // JSON.stringifyしてchanges_summaryへ保存する
+}
+
+export function logAiCall(env: Env, input: AiCallLogInput): Promise<D1Result> {
+  return env.DB.prepare(
+    `INSERT INTO ai_call_logs
+       (created_at, call_type, model, system_prompt, user_prompt, raw_response, success, error, changes_summary)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      new Date().toISOString(),
+      input.callType,
+      input.model,
+      input.systemPrompt,
+      input.userPrompt,
+      input.rawResponse,
+      input.success ? 1 : 0,
+      input.error,
+      input.changesSummary != null ? JSON.stringify(input.changesSummary) : null
+    )
+    .run();
+}
+
+export function listAiCallLogs(env: Env, limit = 50, offset = 0): Promise<D1Result<AiCallLogRow>> {
+  return env.DB.prepare("SELECT * FROM ai_call_logs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?")
+    .bind(limit, offset)
+    .all<AiCallLogRow>();
+}
+
+export function getAiCallLog(env: Env, id: number): Promise<AiCallLogRow | null> {
+  return env.DB.prepare("SELECT * FROM ai_call_logs WHERE id = ?").bind(id).first<AiCallLogRow>();
 }

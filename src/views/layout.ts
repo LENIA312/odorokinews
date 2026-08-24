@@ -144,34 +144,34 @@ const STYLE = `
 
   .mosen-clock {
     max-width: 880px;
-    margin: 0.5rem auto 0;
-    padding: 0.5rem 1.2rem 0.7rem;
+    margin: 0.6rem auto 0;
+    padding: 0.6rem 1.2rem 1rem;
     text-align: center;
     font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
   }
   .mosen-clock .clock-label {
-    font-size: 0.62rem;
-    letter-spacing: 0.2em;
+    font-size: 0.75rem;
+    letter-spacing: 0.25em;
     color: var(--ink-soft);
   }
   .mosen-clock .clock-date {
-    font-size: 1.1rem;
+    font-size: 1.7rem;
     font-weight: 700;
     color: var(--accent);
     letter-spacing: 0.02em;
-    margin-top: 0.1rem;
-  }
-  .mosen-clock .clock-time {
-    font-size: 0.78rem;
-    color: var(--ink-soft);
-    font-variant-numeric: tabular-nums;
-    letter-spacing: 0.05em;
     margin-top: 0.15rem;
   }
+  .mosen-clock .clock-time {
+    font-size: 1.3rem;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.08em;
+    margin-top: 0.2rem;
+  }
   .mosen-clock .clock-weather {
-    font-size: 0.78rem;
+    font-size: 1rem;
     color: var(--ink-soft);
-    margin-top: 0.1rem;
+    margin-top: 0.2rem;
   }
 
   h2.section-title {
@@ -402,13 +402,11 @@ const CLOCK_SCRIPT = [
   "  }",
   "  function pad(n) { return (n < 10 ? '0' : '') + n; }",
   "",
-  "  var lastMs = null, nextMs = null;",
+  "  var HOUR_MS = 60 * 60 * 1000; // 現実1時間=世界の1日。map.tsのDAY_SECONDSと同じレートに揃えてある",
   "",
   "  function tick() {",
-  "    if (!timeEl || lastMs == null || nextMs == null || nextMs <= lastMs) return;",
-  "    var now = Date.now();",
-  "    var frac = (now - lastMs) / (nextMs - lastMs);",
-  "    frac = Math.max(0, Math.min(0.999988, frac));",
+  "    if (!timeEl) return;",
+  "    var frac = (Date.now() % HOUR_MS) / HOUR_MS;",
   "    var totalSec = Math.floor(frac * 86400);",
   "    var h = Math.floor(totalSec / 3600);",
   "    var m = Math.floor((totalSec % 3600) / 60);",
@@ -420,8 +418,6 @@ const CLOCK_SCRIPT = [
   "    fetch('/api/clock').then(function (res) { return res.json(); }).then(function (data) {",
   "      if (!data || !data.worldDate) return;",
   "      dateEl.textContent = formatDate(data.worldDate);",
-  "      lastMs = data.lastPublishedAt ? new Date(data.lastPublishedAt).getTime() : null;",
-  "      nextMs = data.nextPublishAt ? new Date(data.nextPublishAt).getTime() : null;",
   "      if (weatherEl && data.weather) {",
   "        weatherEl.textContent = (WEATHER_ICON[data.weather] || '') + ' ' + data.weather;",
   "      }",
@@ -429,6 +425,7 @@ const CLOCK_SCRIPT = [
   "  }",
   "",
   "  poll();",
+  "  tick();",
   "  setInterval(poll, 120000);",
   "  setInterval(tick, 1000);",
   "})();",

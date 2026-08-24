@@ -43,6 +43,9 @@ import {
   listPeopleByKana,
   listRecentEvents,
   listRecentSimulationRuns,
+  listAiCallLogs,
+  getAiCallLog,
+  logAiCall,
   listRelationshipsForPerson,
   listTimeline,
   parseIdArray,
@@ -90,12 +93,14 @@ import {
 } from "./views/mapZones";
 import { runDailySimulation } from "./simulation/runDailySimulation";
 import { postDailyNewsDigest } from "./social/dailyDigest";
-import { findDueSlot, nextSlotUtcMillis, parseAutoPublishTimes } from "./simulation/schedule";
+import { findDueSlot, parseAutoPublishTimes } from "./simulation/schedule";
 import { callAiForJson } from "./simulation/ai";
 import { buildEventPrompt, buildNewsPrompt } from "./simulation/prompts";
-import { validateEventDraft, validateNewsDraft, validateStateChanges } from "./simulation/validate";
+import { summarizeEventDraftForLog, validateEventDraft, validateNewsDraft, validateStateChanges } from "./simulation/validate";
 import { applyStateChanges } from "./simulation/stateChanges";
 import { padShortArticleBody } from "./simulation/fallback";
+import { tickWorldDate } from "./simulation/worldClock";
+import { seedStarterFacilities } from "./simulation/citySeed";
 import type { EconomicDataRow, OrganizationRow, PersonRow, RelationshipRow } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -335,16 +340,13 @@ app.get("/api/health", async (c) => {
 // ヘッダーの「モーゼンの時計」が秒単位で刻む時計を描画するための情報。
 // 直近の配信時刻から次の配信予定時刻までの進み具合を元に、
 // 世界の1日(24時間)の中の「今」を割り出す。
+// ヘッダーの時計用。日付・天候はここから取得し、時刻(時:分:秒)は
+// クライアント側でDate.now()を1時間=世界の1日のレートに変換して独立に刻む
+// （地図の人物アニメーションと同じレート、layout.tsのCLOCK_SCRIPT/map.tsのDAY_SECONDS参照）。
 app.get("/api/clock", async (c) => {
   const world = await getWorld(c.env);
   if (!world) return c.json({ error: "world not found" }, 500);
-  const nextMs = nextSlotUtcMillis(new Date(), world.auto_publish_times);
-  return c.json({
-    worldDate: world.current_date,
-    lastPublishedAt: world.last_published_at,
-    nextPublishAt: nextMs ? new Date(nextMs).toISOString() : null,
-    weather: world.weather,
-  });
+  return c.json({ worldDate: world.current_date, weather: world.weather });
 });
 
 // 管理画面（/admin）。トークン入力・表示自体は誰でも開けるが、
@@ -402,6 +404,44 @@ app.get("/api/admin/status", async (c) => {
     recentRuns: runs.results ?? [],
     recentNews: news.results ?? [],
     schedule: world ? parseAutoPublishTimes(world.auto_publish_times).map((t) => `${t} JST`) : [],
+  });
+});
+
+// ---- 管理画面: AI履歴 ----
+
+app.get("/api/admin/ai-logs", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const logs = await listAiCallLogs(c.env, 100);
+  return c.json({
+    logs: (logs.results ?? []).map((l) => ({
+      id: l.id,
+      createdAt: l.created_at,
+      callType: l.call_type,
+      model: l.model,
+      success: !!l.success,
+    })),
+  });
+});
+
+app.get("/api/admin/ai-logs/:id", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const log = await getAiCallLog(c.env, id);
+  if (!log) return c.json({ error: "not found" }, 404);
+  return c.json({
+    id: log.id,
+    createdAt: log.created_at,
+    callType: log.call_type,
+    model: log.model,
+    systemPrompt: log.system_prompt,
+    userPrompt: log.user_prompt,
+    rawResponse: log.raw_response,
+    success: !!log.success,
+    error: log.error,
+    changesSummary: log.changes_summary ? JSON.parse(log.changes_summary) : null,
   });
 });
 
@@ -500,24 +540,7 @@ app.post("/api/admin/cities", async (c) => {
 
   // 新しい都市は単一のランドマークで終わらせず、最初から住宅街・商店街の施設を
   // 用意しておく（「新都市の各施設単位で表示されるべき」という方針のため）。
-  const newCityAnchor = { id, map_x: pos.x, map_y: pos.y };
-  const seededPoints: { x: number; y: number }[] = [];
-  const starterFacilities: Array<{ name: string; kind: string }> = [
-    { name: `${name}住宅街`, kind: "residential" },
-    { name: `${name}商店街`, kind: "shopping_street" },
-  ];
-  for (const starter of starterFacilities) {
-    const facPos = assignZonePositionForCity(newCityAnchor, seededPoints);
-    await createFacility(c.env, {
-      name: starter.name,
-      kind: starter.kind,
-      city_id: id,
-      description: null,
-      map_x: facPos.x,
-      map_y: facPos.y,
-    });
-    seededPoints.push(facPos);
-  }
+  await seedStarterFacilities(c.env, id, name, pos);
 
   return c.json({ ok: true, id, position: pos });
 });
@@ -840,8 +863,18 @@ app.post("/api/admin/news/generate", async (c) => {
   });
 
   const aiResult = await callAiForJson(c.env, c.env.AI_EVENT_MODEL, system, user);
+  const validated = aiResult.ok ? validateEventDraft(aiResult.json, allowedPersonIds, allowedOrgIds, city.id) : null;
+  await logAiCall(c.env, {
+    callType: "admin_event",
+    model: c.env.AI_EVENT_MODEL,
+    systemPrompt: system,
+    userPrompt: user,
+    rawResponse: aiResult.raw ?? null,
+    success: validated != null,
+    error: !aiResult.ok ? aiResult.error ?? "AI呼び出し失敗" : !validated ? "バリデーション失敗" : null,
+    changesSummary: validated ? summarizeEventDraftForLog(validated) : null,
+  });
   if (!aiResult.ok) return c.json({ error: "イベントAIの呼び出しに失敗しました: " + aiResult.error }, 502);
-  const validated = validateEventDraft(aiResult.json, allowedPersonIds, allowedOrgIds, city.id);
   if (!validated) return c.json({ error: "イベントAIの出力を検証できませんでした" }, 502);
 
   const nowIso = () => new Date().toISOString();
@@ -937,6 +970,16 @@ app.post("/api/admin/news/generate", async (c) => {
   );
   const newsAiResult = await callAiForJson(c.env, c.env.AI_NEWS_MODEL, newsSystem, newsUser, 1600);
   let newsDraft = newsAiResult.ok ? validateNewsDraft(newsAiResult.json) : null;
+  await logAiCall(c.env, {
+    callType: "admin_news",
+    model: c.env.AI_NEWS_MODEL,
+    systemPrompt: newsSystem,
+    userPrompt: newsUser,
+    rawResponse: newsAiResult.raw ?? null,
+    success: newsDraft != null,
+    error: !newsAiResult.ok ? newsAiResult.error ?? "AI呼び出し失敗" : !newsDraft ? "バリデーション失敗" : null,
+    changesSummary: newsDraft ? { title: newsDraft.title, category: newsDraft.category, bodyLength: newsDraft.body.length } : null,
+  });
   if (!newsDraft) {
     newsDraft = {
       title: validated.summary,
@@ -1596,6 +1639,15 @@ export default {
       );
       return;
     }
+    ctx.waitUntil(
+      (async () => {
+        try {
+          await tickWorldDate(env);
+        } catch (err) {
+          console.error("world date tick failed", err);
+        }
+      })()
+    );
     ctx.waitUntil(
       (async () => {
         const world = await getWorld(env);

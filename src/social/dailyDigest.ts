@@ -3,7 +3,7 @@
 // Cronのタイミングはindex.tsのscheduled()、投稿の実処理はここに集約する。
 
 import type { Env, NewsRow } from "../types";
-import { listNewsByPublishedRange } from "../db/queries";
+import { listNewsByPublishedRange, logAiCall } from "../db/queries";
 import { callAiForText } from "../simulation/ai";
 import { postTweet } from "./xClient";
 import { SITE_URL } from "../constants";
@@ -56,7 +56,7 @@ function sanitizeSummary(text: string): string {
 
 function buildFallbackSummary(newsList: NewsRow[]): string {
   const titles = newsList.slice(0, 3).map((n) => n.title).join("、");
-  return newsList.length > 3 ? `${titles}など、${newsList.length}件のニュースがありました。` : `${titles}。`;
+  return newsList.length > 3 ? `${titles}など、様々なことがあった一日でした。` : `${titles}。`;
 }
 
 /**
@@ -102,8 +102,11 @@ export async function postDailyNewsDigest(env: Env, now: Date = new Date()): Pro
     .join("\n");
 
   const systemPrompt =
-    "あなたはニュースサイト「モーゼン・クロニクル」のSNS担当です。渡された前日の記事タイトル一覧から、" +
+    "あなたは架空世界「モーゼン・アングラ」の出来事を伝えるSNS担当です。渡された前日の記事タイトル一覧から、" +
     "読者が「昨日はどんな一日だったか」をざっくり掴める1〜2文の日本語の紹介文を書いてください。" +
+    "**「こんなニュースがありました」「〜という記事が出ました」「〜が話題になりました」のような、" +
+    "ニュースや記事そのものを話題にする報道口調は避けること。** 代わりに「〜ということがあった」" +
+    "「〜した」のように、世界で実際に起きた出来事そのものを直接語る書き方にすること。" +
     "見出しの単純な列挙ではなく、自然な文章にすること。誇張しすぎず、興味を引く程度の軽いトーンで。" +
     "ハッシュタグ・絵文字・鉤括弧での引用は使わず、本文だけを出力してください。";
   const userPrompt = `【${dateLabel}の記事一覧】\n${titleLines}`;
@@ -111,7 +114,7 @@ export async function postDailyNewsDigest(env: Env, now: Date = new Date()): Pro
   const ai = await callAiForText(env, env.AI_NEWS_MODEL, systemPrompt, userPrompt, 200);
   const summary = ai.ok && ai.raw ? sanitizeSummary(ai.raw) : buildFallbackSummary(newsList);
 
-  const prefix = `【モーゼン・クロニクル】${dateLabel}のニュースまとめ\n`;
+  const prefix = `モーゼン・アングラの${dateLabel}のできごと\n`;
   const separator = "\n\n";
   const url = `${SITE_URL}/news`;
   const budget = TWEET_WEIGHT_LIMIT - weightedLength(prefix) - weightedLength(separator) - URL_WEIGHT - 5;
@@ -119,6 +122,16 @@ export async function postDailyNewsDigest(env: Env, now: Date = new Date()): Pro
   const tweetText = `${prefix}${trimmedSummary}${separator}${url}`;
 
   const result = await postTweet(env, tweetText);
+  await logAiCall(env, {
+    callType: "tweet_digest",
+    model: env.AI_NEWS_MODEL,
+    systemPrompt,
+    userPrompt,
+    rawResponse: ai.ok ? ai.raw ?? null : null,
+    success: result.ok,
+    error: !ai.ok ? ai.error ?? "AI呼び出し失敗（フォールバック要約を使用）" : result.ok ? null : result.error ?? "投稿失敗",
+    changesSummary: { posted: result.ok, tweetText, newsCount: newsList.length },
+  });
   if (!result.ok) {
     console.error("X daily digest post failed", result.error);
     return { posted: false, reason: result.error, tweetText, newsCount: newsList.length };

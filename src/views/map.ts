@@ -231,7 +231,7 @@ function zoneMarkers(zones: Zone[]): string {
 
 const STYLE_EXTRA = [
   "#cityMap {",
-  "  width:100%; height:auto; border:1px solid var(--line); border-radius:8px;",
+  "  width:100%; height:auto; min-height:62vh; max-height:82vh; border:1px solid var(--line); border-radius:8px;",
   "  touch-action: none;",
   "  -webkit-user-select: none; -moz-user-select: none; user-select: none;",
   "  -webkit-touch-callout: none;",
@@ -243,7 +243,8 @@ const STYLE_EXTRA = [
   "#spotlight a { font-weight:600; }",
   ".legend { display:flex; gap:1rem; flex-wrap:wrap; font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.78rem; color:var(--ink-soft); margin-top:0.6rem; }",
   ".legend .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:0.3rem; vertical-align:middle; }",
-  "#personTip { font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.82rem; color:var(--ink-soft); min-height:1.4em; margin-top:0.5rem; }",
+  "#personTip { font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.85rem; color:var(--ink-soft); min-height:1.4em; margin-top:0.5rem; }",
+  "#personTip a { font-size:1.3rem; font-weight:700; color:var(--accent); }",
   ".person-dot { transition: r 0.15s; }",
   ".person-dot:hover { r: 5.5; }",
   "@keyframes spotlightPulse { 0% { r: 22; opacity: 0.55; } 100% { r: 38; opacity: 0; } }",

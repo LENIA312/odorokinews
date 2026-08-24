@@ -29,8 +29,22 @@ export interface WorldRow {
   last_auto_publish_slot: string | null;
   last_published_at: string | null;
   weather: string;
+  last_date_tick_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface AiCallLogRow {
+  id: number;
+  created_at: string;
+  call_type: string;
+  model: string;
+  system_prompt: string;
+  user_prompt: string;
+  raw_response: string | null;
+  success: number;
+  error: string | null;
+  changes_summary: string | null;
 }
 
 export interface CityRow {

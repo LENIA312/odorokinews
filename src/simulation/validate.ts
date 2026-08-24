@@ -28,6 +28,13 @@ export interface NewFacilityDraft {
   city_id: number;
 }
 
+export interface NewCityDraft {
+  name: string;
+  population: number | null;
+  description: string;
+  industries: string[];
+}
+
 // ひらがな（＋長音記号・中黒・空白）のみで構成されているかを緩く判定する。
 const HIRAGANA_ONLY = /^[ぁ-ゖゝ-ゟー・\s]+$/;
 
@@ -46,6 +53,7 @@ export interface ValidatedEventDraft {
   related_organization_ids: number[];
   new_organizations: NewOrganizationDraft[];
   new_facilities: NewFacilityDraft[];
+  new_city: NewCityDraft | null;
   weather: string | null;
   state_changes: StateChange[];
 }
@@ -60,6 +68,10 @@ const MAX_STATE_CHANGES = 6;
 const MAX_NEW_ORGS = 2;
 const MAX_NEW_FACILITIES = 2;
 const MAX_ANNUAL_INCOME = 30_000_000;
+const MAX_CITY_NAME = 40;
+const MAX_CITY_DESCRIPTION = 400;
+const MIN_CITY_DESCRIPTION = 60; // 「できるだけ細かく都市の設定を書き上げる」を機械的に強制する下限
+const MAX_CITY_INDUSTRIES = 6;
 const ALLOWED_STATUS = new Set<string>(PERSON_STATUSES);
 const ALLOWED_ORG_STATUS = new Set<string>(ORG_STATUSES);
 const ALLOWED_ORG_KINDS = new Set<string>(ORG_KINDS);
@@ -117,7 +129,8 @@ export function validateEventDraft(
   raw: unknown,
   allowedPersonIds: Set<number>,
   allowedOrgIds: Set<number>,
-  cityId: number
+  cityId: number,
+  canCreateCity = false
 ): ValidatedEventDraft | null {
   if (typeof raw !== "object" || raw === null) return null;
   const obj = raw as Record<string, unknown>;
@@ -202,6 +215,25 @@ export function validateEventDraft(
     }
   }
 
+  // 新しい都市の誕生は世界にとって非常に大きな出来事のため、乱発を防ぐ二重の制約を課す:
+  // (1) 呼び出し側が「現在の都市数がまだ上限未満」と判断した場合のみ(canCreateCity)提案を受理し、
+  // (2) 詳細な説明文(MIN_CITY_DESCRIPTION文字以上)が無い雑な提案は却下する
+  //     （「できるだけ細かく都市の設定を書き上げる」という条件を機械的に強制する）。
+  let newCity: NewCityDraft | null = null;
+  if (canCreateCity && typeof obj.new_city === "object" && obj.new_city !== null) {
+    const nc = obj.new_city as Record<string, unknown>;
+    const name = cleanText(nc.name, MAX_CITY_NAME);
+    const description = cleanText(nc.description, MAX_CITY_DESCRIPTION);
+    const population =
+      isFiniteNumber(nc.population) && nc.population >= 0 ? Math.round(nc.population) : null;
+    const industries = Array.isArray(nc.industries)
+      ? nc.industries.filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, MAX_CITY_INDUSTRIES)
+      : [];
+    if (name && description.length >= MIN_CITY_DESCRIPTION) {
+      newCity = { name, population, description, industries };
+    }
+  }
+
   const stateChanges = validateStateChanges(
     obj.state_changes,
     allowedPersonIds,
@@ -222,8 +254,26 @@ export function validateEventDraft(
     related_organization_ids: relatedOrgIds,
     new_organizations: newOrganizations,
     new_facilities: newFacilities,
+    new_city: newCity,
     weather,
     state_changes: stateChanges,
+  };
+}
+
+/** AI履歴タブ表示用に、検証済みイベント案から「何が変わるか」を人間が読める形にまとめる。 */
+export function summarizeEventDraftForLog(draft: ValidatedEventDraft): Record<string, unknown> {
+  return {
+    eventType: draft.event_type,
+    summary: draft.summary,
+    involvesMagic: draft.involves_magic,
+    relatedPersonCount: draft.related_person_ids.length,
+    newPeople: draft.new_people.map((p) => p.name),
+    relatedOrganizationCount: draft.related_organization_ids.length,
+    newOrganizations: draft.new_organizations.map((o) => o.name),
+    newFacilities: draft.new_facilities.map((f) => f.name),
+    newCity: draft.new_city ? draft.new_city.name : null,
+    weather: draft.weather,
+    stateChanges: draft.state_changes,
   };
 }
 

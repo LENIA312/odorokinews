@@ -123,6 +123,10 @@ export const GENDER_LABEL: Record<string, string> = {
   other: "その他",
 };
 
+// イベントAIが新しい都市(new_city)を提案してよい上限。都市の誕生は非常に大きな出来事なので
+// 乱発を防ぐための機械的な上限（既存+draft含めた総数がこれ未満の場合のみ提案を許可する）。
+export const MAX_TOTAL_CITIES = 8;
+
 export const WEATHER_CONDITIONS = [
   "晴れ",
   "曇り",

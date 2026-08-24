@@ -74,11 +74,14 @@ export async function callAiForJson(
   userPrompt: string,
   maxTokens = 900
 ): Promise<AiCallResult> {
+  let raw: string | undefined;
   try {
-    const raw = await callChatModel(env, model, systemPrompt, userPrompt, maxTokens);
+    raw = await callChatModel(env, model, systemPrompt, userPrompt, maxTokens);
     const json = extractJson(raw);
     return { ok: true, raw, json };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    // rawが取得できていれば(=JSON抽出/呼び出し自体の失敗)、AI履歴タブでの原因調査のために
+    // 失敗時も返す（呼び出し自体が失敗した場合はundefinedのまま）。
+    return { ok: false, raw, error: err instanceof Error ? err.message : String(err) };
   }
 }

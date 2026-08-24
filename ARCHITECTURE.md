@@ -28,7 +28,8 @@
 12. [運用コマンド](#12-運用コマンド)
 13. [既知の制約・スコープ外](#13-既知の制約スコープ外)
 14. [X（旧Twitter）への日次まとめ投稿](#14-x旧twitterへの日次まとめ投稿)
-15. [更新履歴](#15-更新履歴)
+15. [世界暦ティッカー・年表の選別・都市のAI自動作成・AI履歴](#15-世界暦ティッカー年表の選別都市のai自動作成ai履歴)
+16. [更新履歴](#16-更新履歴)
 
 ---
 
@@ -105,8 +106,12 @@ src/
     ai.ts                        Workers AI呼び出し + レスポンスからのJSON抽出
     validate.ts                  AI出力のバリデーション/サニタイズ（state_changesの検証も含む）
     stateChanges.ts              state_changes配列を実際にDBへ適用する共通処理
-    fallback.ts                  AI失敗時に使うテンプレートベースのイベント/記事生成
+    fallback.ts                  AI失敗時に使うテンプレートベースのイベント/記事生成、
+                                    padShortArticleBody()（記事本文の最低文字数の機械的な底上げ）
     schedule.ts                  自動配信時刻(JST)の判定ロジック
+    worldClock.ts                 世界暦を現実1時間ごとに独立して進めるティッカー（tickWorldDate、15.1節）
+    citySeed.ts                    新しい都市に住宅街+商店街の施設を自動生成する共通処理
+                                    （管理画面からの手動作成/イベントAIによる自動作成の両方で使う）
   social/
     dailyDigest.ts               X日次まとめ投稿の本体（対象記事の取得・AI要約・文字数管理、14章）
     xClient.ts                   X API v2投稿用のOAuth 1.0a署名生成（crypto.subtleのみで実装）
@@ -153,12 +158,14 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、静�
 | id | INTEGER PK | 0001 | 常に1 |
 | name / name_en | TEXT | 0001 | 国名（モーゼン・アングラ / Mose'n Ungra） |
 | origin_story | TEXT | 0001 | 建国神話（世界観フレーバーテキスト） |
-| current_date | TEXT | 0001 | 世界暦 `YYYY-MM-DD`。ニュース配信のたびに+1日 |
+| current_date | TEXT | 0001 | 世界暦 `YYYY-MM-DD`。**ニュース配信とは独立**して、現実1時間ごとに`worldClock.ts`の
+  `tickWorldDate()`が+1日する（15.1節。以前は配信のたびに+1日していたが切り離した） |
 | auto_publish_times | TEXT | 0003 | JSON配列 `["10:00","22:00"]` 等（JST）。管理画面から変更可能 |
 | last_auto_publish_slot | TEXT | 0003 | 直近に自動実行した枠 `"YYYY-MM-DD HH:MM"`（二重実行防止） |
-| last_published_at | TEXT | 0004 | 直近の配信ISO時刻（ヘッダー時計の秒針計算に使用） |
+| last_published_at | TEXT | 0004 | 直近の配信ISO時刻（現在はヘッダー時計には使わない。単なる記録用） |
 | weather | TEXT | 0006 | 現在の天候（`WEATHER_CONDITIONS`のいずれか）。管理画面から手動更新できる他、
   日次シミュレーションのたびにイベントAI(または現状維持)が管理する（6.2節） |
+| last_date_tick_at | TEXT? | 0010 | 世界暦ティッカーが最後に進めた実時刻（15.1節） |
 | created_at / updated_at | TEXT | 0001 | |
 
 #### `cities`
@@ -171,7 +178,9 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、静�
 | population | INTEGER? | 0001 | |
 | description | TEXT? | 0001 | |
 | industries | TEXT? | 0001 | JSON配列文字列（例 `["漁業","観光"]`） |
-| status | TEXT | 0005 | `active` \| `draft`。Activeな都市のみ日次シミュレーションの舞台候補になる |
+| status | TEXT | 0005 | `active` \| `draft`。Activeな都市のみ日次シミュレーションの舞台候補になる。
+  管理画面からの手動作成に加え、**イベントAIが非常に稀な出来事として新都市を提案・作成することもある**
+  （常に`draft`で作成され、管理者のActive化待ちになる。15.3節） |
 | map_x / map_y | REAL? | 0005 | **地図上に何かを描画するための座標ではない**。その都市に属する組織・施設を
   新規作成する際の「拠点」基準点（`assignZonePositionForCity`が使う）。都市そのものは
   単一のマーカーとしては地図に描画されず、その都市に属する施設・組織の集合として表現される
@@ -303,7 +312,9 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 
 #### `timeline`
 
-年表ページ(`/timeline`)用。`news`作成時に必ず1行追加される（`world_date`, `event_id`, `headline`）。
+年表ページ(`/timeline`)用（`world_date`, `event_id`, `headline`）。**「毎回のニュース履歴」ではなく、
+世界の状態に実際に影響があった出来事だけを記録する**（15.2節。以前は`news`作成のたびに必ず1行
+追加していたが、それだと単なるニュース一覧と大差なくなってしまうため変更した）。
 
 #### `economic_data`（追記専用・更新削除なし）
 
@@ -322,9 +333,29 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 
 #### `simulation_runs`（日次シミュレーションの実行履歴）
 
-`world_date` に `UNIQUE` 制約があり、同一世界日への二重実行を防ぐ。`status`: running/success/failed。
-ニュース削除時（後述）、対応する `event_id`/`news_id` は `NULL` に戻すが、行自体は削除しない
-（実行履歴としての監査証跡は残す）。
+`status`: running/success/failed。ニュース削除時（後述）、対応する `event_id`/`news_id` は `NULL`
+に戻すが、行自体は削除しない（実行履歴としての監査証跡は残す）。
+`world_date`列は**0010マイグレーションで`UNIQUE`制約を撤廃した**（以前は「配信1回=世界暦+1日」
+だったため同一世界日への二重実行防止に使っていたが、世界暦がニュース配信と独立して進むように
+なった結果、同じ世界暦の日に複数回ニュースが生成されるのが正当な状態になったため。15.1節）。
+
+#### `ai_call_logs`（0010で新規追加。管理画面「AI履歴」タブ用）
+
+イベントAI・記者AI・X日次まとめ投稿AIなど、個々のAI呼び出しを1件ずつ記録する
+（event+newsのペアをまとめず、呼び出し単位でそのまま残す。15.4節）。
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| id | INTEGER PK | |
+| created_at | TEXT | |
+| call_type | TEXT | `daily_event` / `daily_news` / `admin_event` / `admin_news` / `tweet_digest` |
+| model | TEXT | |
+| system_prompt / user_prompt | TEXT | 実際に送信したプロンプト全文 |
+| raw_response | TEXT? | AIの生レスポンス。JSON抽出に失敗した場合でも呼び出し自体が成功していれば記録される
+  （`callAiForJson`のバグ修正、15.4節） |
+| success | INTEGER | 0/1。バリデーション通過や投稿成功など「意味のある結果になったか」 |
+| error | TEXT? | 失敗理由（人間が読める説明文） |
+| changes_summary | TEXT? | JSON。結果として何が変わったかの構造化サマリ（表示用） |
 
 ### 4.2 マイグレーション履歴
 
@@ -339,6 +370,7 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 | `0007_person_life_details.sql` | `people.annual_income/job_title/birth_date/birthplace` |
 | `0008_occupations_and_reporters.sql` | `occupation_types`テーブル新規作成+初期データ約70件、記者2人をpeopleへ追加投入、`news.reporter_person_id` |
 | `0009_facilities.sql` | `facilities`テーブル新規作成。ダイナン市の旧`FIXED_ZONES`(大学・住宅街×3・公園・商店街)を投入 |
+| `0010_world_clock_and_ai_logs.sql` | `world.last_date_tick_at`追加。`simulation_runs.world_date`のUNIQUE制約を撤廃（テーブル再作成による移行）。`ai_call_logs`テーブル新規作成 |
 
 新しいマイグレーションを追加したら、このテーブルと4.1節の該当テーブルの説明を両方更新すること。
 
@@ -371,6 +403,7 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 | `ORG_KIND_LABEL` | 上記の日本語ラベル（例: company→企業） |
 | `CITY_STATUSES` | active, draft |
 | `CITY_STATUS_LABEL` | 上記の日本語ラベル（active→稼働中, draft→準備中） |
+| `MAX_TOTAL_CITIES` | 8。イベントAIが新都市(new_city)を提案してよい上限（既存+draft総数がこれ未満の場合のみ） |
 | `FACILITY_KINDS` | residential, university, park, shopping_street, other |
 | `FACILITY_KIND_LABEL` | 上記の日本語ラベル（例: residential→住宅街） |
 | `GENDER_OPTIONS` | male, female, other（管理画面のプルダウンで使う既知の選択肢） |
@@ -393,46 +426,59 @@ enum値は変えず、UIだけ日本語化することで両立させている�
 
 ### 5.1 全体フロー（`src/simulation/runDailySimulation.ts`）
 
-`runDailySimulation(env)` が1回呼ばれるたびに、世界の日付が1日進み、イベントとニュースが1件確定する。
+`runDailySimulation(env)` が1回呼ばれるたびに、イベントとニュースが1件確定する。
 呼び出し元は「Cronの`scheduled`ハンドラ」と「管理画面の `POST /api/admin/simulate`（手動実行）」の2つ。
+**世界暦(world.current_date)はここでは進めない**（15.1節の`tickWorldDate()`が独立して進める）。
+出来事の発生日は「今の世界暦」をそのまま使うため、同じ世界暦の日に複数回ニュースが生成されることも
+正当にありうる（`simulation_runs.world_date`のUNIQUE制約は撤廃済み、4.2節）。
 
 ```
-1. world.current_date + 1日 = targetDate
-2. simulation_runs に同じworld_dateの成功記録があればスキップ（二重実行防止）
-3. simulation_runs に 'running' で1行INSERT
-4. Active な都市からランダムに1件選択（listActiveCities）
+1. targetDate = world.current_date（そのまま。以前は+1日していたが今はしない）
+2. simulation_runs に 'running' で1行INSERT
+3. Active な都市からランダムに1件選択（listActiveCities）
    - 該当なしなら city_id=1（ダイナン市）にフォールバック
-5. その都市に属する組織・施設・人物・直近5件のイベントを取得
+4. その都市に属する組織・施設・人物・直近5件のイベントを取得
+5. 全都市の総数(active+draft)がMAX_TOTAL_CITIES未満なら canCreateCity=true とし、
+   イベントAIへ新都市(new_city)の提案を許可する（15.3節）
 6. env.AI があり、AI呼び出し上限(AI_MAX_CALLS_PER_RUN)内なら:
-   a. buildEventPrompt() でプロンプトを組み立て、イベントAIを呼ぶ（都市IDも渡す。6.2節）
+   a. buildEventPrompt() でプロンプトを組み立て、イベントAIを呼ぶ（都市ID・canCreateCityも渡す。6.2節）
    b. validateEventDraft() で検証。直前イベントと同じ組織が主役なら機械的に却下しフォールバックへ
-   c. 検証OKなら source='ai'、NGならフォールバックテンプレートへ
+   c. 呼び出し結果を ai_call_logs へ記録（call_type='daily_event'、15.4節）
+   d. 検証OKなら source='ai'、NGならフォールバックテンプレートへ
    AIが無ければ最初からフォールバック
 7. イベントAIが提案した新規人物(new_people)をpeopleへINSERT。生年月日・生まれはAIには書かせず、
    `computeBirthDateFromAge`（年齢から機械的に算出）とその都市名で必ず埋める（1章・6.2節参照）
 8. イベントAIが提案した新規組織(new_organizations)・新規施設(new_facilities)をDBへINSERT
    （同一都市のみ許可。`assignZonePositionForCity`で自動配置し、新規組織は関係組織としても扱う）
-9. state_changes を applyStateChanges() で実際にDBへ適用（6章・stateChanges.ts参照）
-10. AIが株価変動を提案しなかった上場企業には±5%の自動微変動を与える
+9. イベントAIが新都市(new_city)を提案していれば、citiesへdraft状態で作成し
+   住宅街+商店街の施設を自動生成する（`seedStarterFacilities()`、15.3節）
+10. state_changes を applyStateChanges() で実際にDBへ適用（6章・stateChanges.ts参照）
+11. AIが株価変動を提案しなかった上場企業には±5%の自動微変動を与える
     （「ニュースがあったのに経済が全く動かない」ズレを防ぐ、daily simulation限定の挙動）
-11. events テーブルへ1行INSERT
-12. source==='ai'なら記者AIを呼び出し記事を生成、buildNewsPrompt()。
-    失敗時やfallback経路では、イベントの事実だけから機械的に記事文面を組み立てる
-13. その都市に紐づく記者(occupation='記者')からランダムに1人選び news.reporter_person_id に設定
-14. news テーブルへ1行INSERT、events.news_id を更新、timelineへ1行追加
-15. world.current_date / last_published_at を更新
-16. simulation_runs を 'success' に更新（例外時は'failed'+エラーメッセージ）
+12. events テーブルへ1行INSERT
+13. source==='ai'なら記者AIを呼び出し記事を生成、buildNewsPrompt()。呼び出し結果をai_call_logsへ記録
+    （call_type='daily_news'）。失敗時やfallback経路では、イベントの事実だけから機械的に記事文面を組み立てる
+14. 本文が150文字未満なら padShortArticleBody() で機械的に底上げ（6.3節）
+15. その都市に紐づく記者(occupation='記者')からランダムに1人選び news.reporter_person_id に設定
+16. news テーブルへ1行INSERT、events.news_id を更新
+17. **state_changesの適用・新規人物/組織/施設/都市の作成のいずれかがあった場合のみ**timelineへ1行追加
+    （15.2節。「大事なことが起こった時だけ年表に残る」という方針）
+18. world.last_published_at / weather を更新（current_dateは更新しない）
+19. simulation_runs を 'success' に更新（例外時は'failed'+エラーメッセージ）
 ```
 
-### 5.2 Cron/スケジューリングの仕組み（`schedule.ts`）
+### 5.2 Cron/スケジューリングの仕組み（`schedule.ts` / `worldClock.ts`）
 
-`wrangler.jsonc` のCronは `*/10 * * * *`（10分おき）で固定。実際に「今このタイミングで配信すべきか」の
-判定はコードではなくDB（`world.auto_publish_times`、JSON配列のJST時刻文字列）で行うため、**配信時刻を
-変えるのに再デプロイは不要**（管理画面の設定タブから変更するだけで最大10分以内に反映される）。
+`wrangler.jsonc` のCronは2本: `*/10 * * * *`（10分おき）と `0 23 * * *`（=08:00 JST、X日次まとめ投稿、
+14章）。`*/10 * * * *`側では毎回2つの独立した処理を行う:
 
-- `findDueSlot(now, autoPublishTimes, lastSlot)`: 「もう過ぎているのにまだ実行していない最新の枠」を返す
-- 二重発火防止は `world.last_auto_publish_slot` で行う（`scheduled`ハンドラが実行後に更新）
-- `nextSlotUtcMillis()`: ヘッダーの「モーゼンの時計」が秒針を刻むための「次回配信予定時刻」計算に使用
+1. **世界暦のティッカー**（`tickWorldDate()`, `worldClock.ts`, 15.1節）: 前回のtickから現実1時間以上
+   経過していれば世界暦を進める。配信の有無とは無関係に毎回チェックする。
+2. **配信チェック**: 実際に「今このタイミングで配信すべきか」の判定はDB（`world.auto_publish_times`、
+   JSON配列のJST時刻文字列）で行うため、**配信時刻を変えるのに再デプロイは不要**（管理画面の設定
+   タブから変更するだけで最大10分以内に反映される）。
+   - `findDueSlot(now, autoPublishTimes, lastSlot)`: 「もう過ぎているのにまだ実行していない最新の枠」を返す
+   - 二重発火防止は `world.last_auto_publish_slot` で行う（`scheduled`ハンドラが実行後に更新）
 
 ### 5.3 都市選択ロジック（マルチシティ対応）
 
@@ -515,6 +561,10 @@ AIが使えない/失敗した場合に必ず動く、テンプレートベー�
   急変は避ける）よう指示。`runDailySimulation.ts`が最後にこの値を`world.weather`へそのまま
   反映する（管理画面からの手動更新`PUT /api/admin/weather`と共存。以前は天候が管理画面からの
   手動更新のみで、日々の記事内容と無関係に固定されていた）。
+- **新都市** (`new_city`) は`canCreateCity`が真の場合のみプロンプトに登場し、提案を許可する
+  （15.3節。都市の誕生は非常に稀な特別な出来事として扱うよう強く指示し、現実の地名をもじった
+  当て字の命名作法・その土地らしい名産品/文化を必ず考えさせる。説明文が短すぎる提案は
+  `validateEventDraft`側でMIN_CITY_DESCRIPTION未満として却下する）。
 - 固定設定（都市名・人口・国名）の変更禁止、過度に暴力的な内容禁止
 - **直近イベントとの重複禁止**を明示（さらにコード側でも直前1件との組織重複を機械的にブロックする
   二重の安全策、詳細は5.1節）
@@ -644,7 +694,10 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 
 表示範囲（SVGの`viewBox`）も `computeBounds()` でゾーン全体を包含するよう毎回動的に計算される
 （`map.ts`）。マップの拡大・縮小（ホイール/ピンチ）・ドラッグ/スワイプでのパンはSVG要素内に
-スコープされており、ページ全体のスクロール・拡大には影響しない。
+スコープされており、ページ全体のスクロール・拡大には影響しない。SVG自体（`#cityMap`）は
+`min-height:62vh; max-height:82vh;`を指定し、縦方向に十分な表示領域を確保している
+（以前は`height:auto`のみで、ゾーンが横に広いバウンディングボックスになった際に縦に狭く
+表示されがちだった）。
 
 `draft`状態の都市に属するゾーン（組織・施設）は**マップに一切表示しない**。SSR時点
 （`/map`ルート、`index.ts`）で都市一覧から`draftCityIds`を計算し、`buildOrgZones`/
@@ -690,6 +743,10 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 `peopleLayer`内で最前面へ再配置する。選択は新しい人物をクリック/検索するまで保持される
 （明示的な解除UIは無い）。
 
+選択・フォーカス中の人物名は`#personTip`内に`<a>`タグで表示され、`#personTip a`に
+`font-size:1.3rem; font-weight:700;`を指定して他のテキストより大きく強調している
+（以前は周囲の説明文と同じ小さいサイズで、誰を選んでいるか分かりにくかった）。
+
 ---
 
 ## 8. 管理画面（/admin）
@@ -707,8 +764,9 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 | ニュース | 記事の一覧・編集（タイトル/本文/カテゴリ/**担当記者**）・**削除**・**新規作成**（AI補助 / 完全手動の2方式、担当記者の指定可） |
 | 人物 | 職業タイプ管理、50音順一覧・**名前/職業/状態での絞込検索**・編集（役職/年収/生年月日/生まれ/**職業を選択式に変更**を含む全項目）・**新規作成**・**人間関係の追加/解除**・**出産の記録** |
 | 経済 | 物価指数の更新、企業一覧・編集・**新規作成**（所在都市を選択可）、株価の個別更新 |
-| 都市 | 都市の一覧・**新規作成**・編集（Active/Draftの切り替えを含む）、**施設の一覧・新規作成・編集**（都市で絞込） |
-| 設定 | 自動配信時刻の追加/削除/保存、**天候の変更** |
+| 都市 | 都市の一覧・**新規作成**・編集（Active/Draftの切り替えを含む）・**削除**、**施設の一覧・新規作成・編集・削除**（都市で絞込） |
+| 設定 | 自動配信時刻の追加/削除/保存、**天候の変更**（AIも管理、15.3節）、X日次まとめ投稿の即時テスト |
+| AI履歴 | イベントAI・記者AI・X投稿AI等の呼び出し履歴一覧。クリックでリクエスト/レスポンス/変更内容を確認（15.4節） |
 
 ### 8.1 ニュース作成の2方式（詳細）
 
@@ -823,7 +881,7 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 |---|---|---|
 | GET | `/api/map/people` | 人物の現在ゾーン・組織/都市のステータス・注目ニュースをJSONで返す |
 | GET | `/api/health` | ヘルスチェック + 世界暦 |
-| GET | `/api/clock` | ヘッダー時計用（世界暦・直近配信時刻・次回配信予定時刻・天候） |
+| GET | `/api/clock` | ヘッダー時計用（世界暦・天候のみ。時刻はクライアント側でDate.now()から独立計算、15.1節） |
 
 ### 管理API（要 `x-admin-token`）
 
@@ -831,6 +889,8 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 |---|---|---|
 | POST | `/api/admin/simulate` | 手動でシミュレーションを1回実行 |
 | GET | `/api/admin/status` | 概要タブ用の状態取得（世界・実行履歴・最新ニュース） |
+| GET | `/api/admin/ai-logs` | AI呼び出し履歴の一覧（日時・種別・モデル・成否のみ、15.4節） |
+| GET | `/api/admin/ai-logs/:id` | AI呼び出し履歴の詳細（プロンプト・レスポンス・変更内容サマリ） |
 | GET/PUT | `/api/admin/settings` | 自動配信時刻・天候の取得/自動配信時刻の更新 |
 | PUT | `/api/admin/weather` | 天候の更新 |
 | GET/POST | `/api/admin/cities` | 都市一覧取得 / 新規作成（作成時に住宅街+商店街の施設を自動生成） |
@@ -1009,6 +1069,13 @@ npm run tail
 - X投稿（14章）はOAuth 1.0aの4シークレットが未設定だと黙ってスキップされる（管理画面の
   「今すぐ投稿をテスト」ボタンを押すと`reason`欄でスキップ理由が確認できる）。投稿失敗時の
   リトライは無く、次のCron発火（翌日08:00 JST）まで待つ以外の自動復旧手段は無い。
+- 世界暦のティッカー（15.1節）は10分おきのCronでのみチェックするため、実際に日付が切り替わる
+  タイミングは現実の1時間境界から最大10分ほど遅れうる。この間、クライアント側の時計
+  （`Date.now()`のみで計算）は既に0:00にリセットされているのに、`worldDate`ラベルはまだ
+  前日のままになる短い不整合が起こりうる（自己修復する、10分以内に解消）。
+- イベントAIによる新都市の作成（15.3節）はMAX_TOTAL_CITIES(8)に達すると提案自体が無視される。
+  上限に達した場合、それ以上都市を増やすには管理画面から手動作成するか、既存のdraft都市を
+  Active化して実質的に整理する必要がある。
 
 ---
 
@@ -1031,11 +1098,16 @@ Cronを待たずに即時実行できる。
    0件ならその日は投稿しない（`posted: false`を返すだけで、エラー扱いにはしない）。
 3. 記事タイトル一覧（最大20件、カテゴリ付き）をAI（`env.AI_NEWS_MODEL`、`callAiForText`＝
    JSON構造を要求しない自由文版。`simulation/ai.ts`に新設）に渡し、1〜2文の紹介文を生成させる。
-   AI呼び出し失敗時は`buildFallbackSummary()`（記事タイトルを「、」で連結するだけの機械的な
-   代替文）にフォールバックする。
-4. `【モーゼン・クロニクル】{日付}のニュースまとめ\n{要約}\n\n{SITE_URL}/news`の形でツイート本文を
-   組み立てる。`SITE_URL`は`constants.ts`に定義（カスタムドメインを設定したらここだけ変更すればよい）。
-5. `postTweet()`（`src/social/xClient.ts`）でX API v2 `POST /2/tweets`へ投稿。
+   「〜というニュースがありました」のような報道口調ではなく、「〜ということがあった」のように
+   世界の出来事そのものを直接語る書き方にするようプロンプトで明示している（以前は報道口調寄りの
+   文になりやすかったための調整）。AI呼び出し失敗時は`buildFallbackSummary()`（記事タイトルを
+   「、」で連結するだけの機械的な代替文）にフォールバックする。
+4. `モーゼン・アングラの{日付}のできごと\n{要約}\n\n{SITE_URL}/news`の形でツイート本文を組み立てる
+   （以前は`【モーゼン・クロニクル】{日付}のニュースまとめ`という見出しだったが、上記と同じ理由で
+   「できごと」という言い回しに変更した）。`SITE_URL`は`constants.ts`に定義
+   （カスタムドメインを設定したらここだけ変更すればよい）。
+5. `postTweet()`（`src/social/xClient.ts`）でX API v2 `POST /2/tweets`へ投稿。呼び出し結果
+   （成功可否・投稿本文・要約対象件数）を`ai_call_logs`へ記録する（call_type='tweet_digest'、15.4節）。
 
 ### 14.2 文字数管理（X独自の重み付けルール）
 
@@ -1070,7 +1142,92 @@ Bearerトークンでは投稿できない）。外部OAuthライブラリは使
 
 ---
 
-## 15. 更新履歴
+## 15. 世界暦ティッカー・年表の選別・都市のAI自動作成・AI履歴
+
+### 15.1 世界暦の独立ティッカー（`worldClock.ts`）
+
+以前は「ニュースが配信されるたびに世界暦が+1日される」設計だったため、配信間隔がそのまま
+世界の1日の長さになってしまい、「投稿しないと日付が変わらない」という不自然な挙動になっていた。
+これを撤廃し、世界暦は配信の有無と完全に独立して、**現実1時間ごとに1日**進むようにした
+（`tickWorldDate()`、`src/simulation/worldClock.ts`）。
+
+- `world.last_date_tick_at`に前回進めた実時刻を記録し、10分おきのCron（5.2節）で
+  「HOUR_MS(=1時間)以上経過していれば進める」を毎回チェックする。
+  複数時間分たまっていた場合はまとめて進め、基準時刻も経過分だけ進めることでズレを蓄積させない。
+- このレートは、地図の人物アニメーション（`map.ts`の`DAY_SECONDS=3600`、実は元からこのレートで
+  「現実1時間で1日分の体感時間が経過する」という設計だった）と**意図的に同じ**にしてある。
+  ヘッダーの時計（`layout.ts`のCLOCK_SCRIPT）も、以前は「直近配信時刻→次回配信予定時刻」を
+  24時間に投影する独自の（かつ配信間隔に依存する）計算をしていたが、これを撤廃し、
+  地図と全く同じ`Date.now() % HOUR_MS`ベースの計算に統一した。これにより「マップと時計の時刻が
+  ずれている」という不整合を解消した。日付ラベルだけは`/api/clock`から取得する
+  （`{worldDate, weather}`のみを返す。以前の`lastPublishedAt`/`nextPublishAt`は使われなくなり削除）。
+- `runDailySimulation.ts`は`world.current_date`を書き換えなくなった。出来事の発生日は
+  「今の世界暦」をそのまま使う（5.1節）。
+
+### 15.2 年表は「重要な出来事」だけを記録
+
+以前は`news`が1件確定するたびに`timeline`へ無条件で1行追加していたため、年表ページが単なる
+ニュース履歴とほぼ同じ内容になってしまっていた。これを、**世界の状態に実際に影響があった、
+または新しい人物・組織・施設・都市が生まれた出来事だけ**に絞るよう変更した
+（`runDailySimulation.ts`の`isSignificant`判定、5.1節ステップ17）:
+
+```
+isSignificant =
+  state_changesの適用結果(appliedImpact)が1件以上 ||
+  新規人物が1人以上作成された ||
+  新規組織が1件以上作成された ||
+  新規施設が1件以上作成された ||
+  新都市が作成された
+```
+
+AIの自己申告（「これは重要な出来事か」をAI自身に判定させる）ではなく、**既に構造化データとして
+確定している「何が変わったか」を機械的に見る**設計にしている（AIの気まぐれな判定に依存しない
+ため）。日常の些細な一コマ（state_changesが空で何も新設されない出来事）は、記事としては
+公開されるが年表には残らない。
+
+### 15.3 イベントAIによる新都市の自動作成
+
+「都市もAIが自動的に作ってよい、ただしできるだけ細かく設定を書き上げることが条件」という方針に
+基づき、イベントAIが`new_city`を提案できるようにした（6.2節）。この世界の都市名は現実の日本の
+地名を音の響きで少しもじった当て字になっており（例: 秦野市→ハダノシ→ハノシダ、お茶が名物）、
+元の土地の特色を都市設定に反映する慣習があるため、プロンプトにもこの作法と具体例
+（ダイナン・ハノシダ・参考例としてのジョウナン）を明示し、新しい都市もこれに倣うよう指示している。
+
+- 乱発防止のため二重の制約: (1) 既存+draft合計がMAX_TOTAL_CITIES(8)未満の場合のみ提案を許可
+  （`canCreateCity`、呼び出し側で判定）、(2) 説明文がMIN_CITY_DESCRIPTION(60文字)未満の
+  雑な提案は`validateEventDraft`側で機械的に却下する。
+- 受理されると、管理画面からの手動作成と同じ経路で処理する: `draft`状態で作成し、
+  `seedStarterFacilities()`（`src/simulation/citySeed.ts`、管理画面の都市作成ハンドラと共通化）で
+  住宅街+商店街の施設を自動生成する。地図上の拠点座標は、このイベントの舞台都市だけでなく
+  **全都市を横断した全ゾーン**を基準に配置する（`assignNewCityPosition`、舞台都市の近くに
+  常に現れてしまうのを避けるため）。
+- draft状態のため、地図には現れず（7章）、日次シミュレーションの舞台候補にもならない
+  （`listActiveCities`はactiveのみ）。管理者がActive化するまでは「裏側で存在するだけ」の都市になる。
+- 管理画面のAI補助ニュース作成（`POST /api/admin/news/generate`）からは新都市を作成できない
+  （`canCreateCity`を渡していない）。あくまで日次シミュレーションのみの機能とした
+  （補足記事の位置づけであるAI補助作成で都市誕生のような大きな出来事を扱うのは
+  不自然なため、8.1節参照）。
+
+### 15.4 AI呼び出し履歴（管理画面「AI履歴」タブ）
+
+管理画面にAI呼び出しの生ログを確認できる「AI履歴」タブを追加した。イベントAI・記者AI・
+管理画面AI補助作成・X日次まとめ投稿AIなど、個々のAI呼び出しをすべて`ai_call_logs`テーブルへ
+記録する（`logAiCall()`、`db/queries.ts`。4.1節にテーブル定義）。
+
+- 一覧（`GET /api/admin/ai-logs`）は日時・種別・モデル・成否のみの軽量なレスポンス。
+  行をクリックすると詳細（`GET /api/admin/ai-logs/:id`）を取得し、システムプロンプト・
+  ユーザープロンプト・レスポンス生データ・変更内容サマリを表示する。
+- 「変更内容」はAI出力をそのまま出すのではなく、`summarizeEventDraftForLog()`（`validate.ts`）等で
+  人間が読みやすい構造（新規作成した人物名・組織名・天候・state_changes等）に整形してから
+  `changes_summary`列へJSONで保存する。
+- **バグ修正**: `callAiForJson`（`simulation/ai.ts`）は、AIの応答からJSON抽出に失敗した場合、
+  従来は取得済みの生レスポンス文字列を握りつぶして`error`だけ返していた。これでは失敗時に
+  「AIが実際に何と答えたか」をAI履歴タブで確認できなかったため、JSON抽出前に`raw`を保持し、
+  失敗時も`{ok: false, raw, error}`として返すよう修正した。
+
+---
+
+## 16. 更新履歴
 
 このセクションは機能追加・変更のたびに1行ずつ追記する（詳細は各章を参照）。
 
@@ -1140,3 +1297,16 @@ Bearerトークンでは投稿できない）。外部OAuthライブラリは使
   （フォールバックへ毎回落ちる）不具合を発見し、`wrangler.jsonc`の`ai`バインディングに
   `remote: true`を追加。ただし`--local`フラグ自体がこれを上書きするため、AI関連の動作確認は
   `--local`を付けずに`wrangler dev`を起動すること（10.2節に教訓を記載）。
+- 2026-08-25: 世界暦を「ニュース配信のたびに+1日」から「現実1時間ごとに独立して+1日」へ変更
+  （`worldClock.ts`のtickWorldDate、15.1節）。ヘッダー時計を、地図の人物アニメーションと同じ
+  `Date.now() % 1時間`ベースの計算に統一し、「地図と時計がずれている」不整合を解消。年表は
+  ニュース履歴の丸写しをやめ、state_changes適用/新規人物・組織・施設・都市の作成があった
+  「重要な出来事」だけを記録するよう変更（15.2節）。イベントAIが非常に稀な特別な出来事として
+  新しい都市を自動作成できるように（現実の地名をもじった当て字の命名作法付き、draft状態で作成、
+  15.3節）。管理画面に「AI履歴」タブを追加し、イベントAI・記者AI・X投稿AI等すべての呼び出しの
+  リクエスト・レスポンス・変更内容を確認できるように（`ai_call_logs`テーブル、15.4節）。
+  あわせて`callAiForJson`がJSON抽出失敗時に生レスポンスを握りつぶしていたバグを修正。
+  X日次まとめ投稿の文体を「ニュースがありました」という報道口調から「できごとがありました」という
+  直接的な語り口に変更（14.1節）。地図領域の縦幅を拡大し（`min-height:62vh`）、選択中の人物名を
+  大きく表示するよう変更（7.4節）。マイグレーション0010で`simulation_runs.world_date`のUNIQUE
+  制約を撤廃し、`world.last_date_tick_at`と`ai_call_logs`テーブルを追加。

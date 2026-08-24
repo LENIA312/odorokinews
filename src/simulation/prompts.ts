@@ -20,6 +20,9 @@ export interface WorldContext {
   people: PersonRow[];
   recentEvents: EventRow[];
   hints?: EventHints;
+  // 現在の都市数がまだ上限未満で、AIが新しい都市の誕生を提案してよい場合のみtrue
+  // （呼び出し側でDBの現在の都市数を見て判断する。runDailySimulation.ts参照）。
+  canCreateCity?: boolean;
 }
 
 const EVENT_SYSTEM_PROMPT = `あなたは架空世界シミュレーションの「イベントAI」です。
@@ -108,6 +111,20 @@ export function buildEventPrompt(ctx: WorldContext): { system: string; user: str
 ${mustPeopleNames.length ? `- 必ず登場させる人物: ${mustPeopleNames.join("、")}\n` : ""}${mustOrgNames.length ? `- 必ず登場させる組織: ${mustOrgNames.join("、")}\n` : ""}${hints?.genre ? `- ジャンル指定: ${hints.genre}\n` : ""}${hints?.keywords ? `- 含めたいキーワード: ${hints.keywords}\n` : ""}上記の指定は related_people / related_organizations に必ず含め、指定に沿った出来事にすること。\n`
     : "";
 
+  const citySection = ctx.canCreateCity
+    ? `\n# 新しい都市の誕生について（今回に限り提案可能）
+この世界の都市名は、現実の日本の地名を音の響きで少しもじった当て字になっており、
+元になった土地の特色（名産品・文化等）が都市の設定に反映されている。例:
+- ダイナン（首都）: 湘南 → 小南 → 大南 → ダイナン
+- ハノシダ: 秦野市 → ハダノシ → ハノシダ（お茶の産地なので茶葉が名物）
+- （参考、まだ存在しない例）ジョウナン: 下北沢 → 下北 → 上南 → ジョウナン（若者文化の街なのでカレーが名物）
+出来事の内容として「新しい開拓地の発見」「独立集落の合流」など、都市がひとつ新しく誕生するに
+ふさわしい、非常に稀で特別な出来事の場合に限り new_city を提案してよい。上記の作法に倣い、
+現実の地名をもじった名前と、その土地らしい名産品・文化・産業を必ず考えること。
+**説明文(description)は手を抜かず、地理・産業・雰囲気などできるだけ細かく書き上げること**
+（雑な1文だけの提案は却下される）。無理に毎回提案する必要はなく、むしろ滅多に使わないこと。\n`
+    : "";
+
   const user = `# 世界設定
 国名: ${ctx.worldName}
 この出来事の舞台となる都市のID: ${ctx.cityId}
@@ -115,7 +132,7 @@ ${mustPeopleNames.length ? `- 必ず登場させる人物: ${mustPeopleNames.joi
 都市の説明: ${ctx.cityDescription}
 生成対象の世界日付: ${ctx.targetDate}
 現在の天候: ${ctx.weather}（出来事の内容と矛盾しないように。無理に天候そのものを話題にする必要はない）
-${hintsSection}
+${hintsSection}${citySection}
 # 参照可能な企業・組織
 ${orgList || "(なし)"}
 
@@ -136,7 +153,7 @@ ${lastEventOrgNames.length ? `\n直前のイベントは${lastEventOrgNames.join
   "related_organizations": [ 上記一覧に存在するid の配列 ],
   "new_organizations": [ {"name": "string", "kind": "company|government|school|other", "industry": "stringまたはnull", "city_id": ${ctx.cityId}} ]（任意、無ければ空配列）,
   "new_facilities": [ {"name": "string", "kind": "residential|university|park|shopping_street|other", "city_id": ${ctx.cityId}} ]（任意、無ければ空配列）,
-  "weather": "${WEATHER_CONDITIONS.join("|")}"（次に世界へ反映する天候。変える必要が無ければ現在と同じ値でよい）,
+  ${ctx.canCreateCity ? `"new_city": {"name": "string（現実の地名をもじった当て字）", "population": 数値, "description": "string（地理・産業・雰囲気などできるだけ詳しく、60文字以上）", "industries": ["string", ...]} または null（滅多に使わないこと）,\n  ` : ""}"weather": "${WEATHER_CONDITIONS.join("|")}"（次に世界へ反映する天候。変える必要が無ければ現在と同じ値でよい）,
   "state_changes": [
     {"type": "person_status", "target_id": 数値, "value": "${PERSON_STATUSES.join("|")}"},
     {"type": "organization_status", "target_id": 数値, "value": "${ORG_STATUSES.join("|")}"},
