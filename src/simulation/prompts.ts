@@ -1,3 +1,4 @@
+import { ORG_STATUSES, PERSON_STATUSES } from "../constants";
 import type { OrganizationRow, PersonRow, TimelineRow } from "../types";
 
 export interface WorldContext {
@@ -65,8 +66,8 @@ ${recent}
   "related_people": [ {"id": 数値} または {"new": {"name": "string", "name_kana": "string（nameのひらがな読み。例: 田中太郎→たなか たろう）", "age": 数値, "gender": "string", "occupation": "string", "organization_id": 数値またはnull}} ],
   "related_organizations": [ 上記一覧に存在するid の配列 ],
   "state_changes": [
-    {"type": "person_status", "target_id": 数値, "value": "alive|injured|hospitalized|deceased|celebrating|under_investigation"},
-    {"type": "organization_status", "target_id": 数値, "value": "active|expanding|under_investigation|recovering|celebrating"},
+    {"type": "person_status", "target_id": 数値, "value": "${PERSON_STATUSES.join("|")}"},
+    {"type": "organization_status", "target_id": 数値, "value": "${ORG_STATUSES.join("|")}"},
     {"type": "economic_stock_price", "target_id": 数値, "value": 数値}
   ]
 }

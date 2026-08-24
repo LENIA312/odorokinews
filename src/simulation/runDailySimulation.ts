@@ -161,6 +161,12 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
         await env.DB.prepare("UPDATE organizations SET status = ?, updated_at = ? WHERE id = ?")
           .bind(change.value, now(), change.target_id)
           .run();
+        // 倒産した場合、そこに勤めていた人物を無所属に戻す(管理画面からの倒産と同じ扱い)。
+        if (change.value === "bankrupt") {
+          await env.DB.prepare("UPDATE people SET organization_id = NULL, updated_at = ? WHERE organization_id = ?")
+            .bind(now(), change.target_id)
+            .run();
+        }
         appliedImpact.push(change);
       } else if (change.type === "economic_stock_price") {
         const prev = await previousEconomicValue(env, change.target_id, "stock_price", targetDate);
@@ -187,8 +193,13 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
     const coveredOrgIds = new Set(
       eventDraft.state_changes.filter((c) => c.type === "economic_stock_price").map((c) => c.target_id)
     );
+    const bankruptedOrgIds = new Set(
+      eventDraft.state_changes
+        .filter((c) => c.type === "organization_status" && c.value === "bankrupt")
+        .map((c) => c.target_id)
+    );
     for (const orgId of eventDraft.related_organization_ids) {
-      if (coveredOrgIds.has(orgId)) continue;
+      if (coveredOrgIds.has(orgId) || bankruptedOrgIds.has(orgId)) continue;
       const org = organizations.find((o) => o.id === orgId);
       if (!org || org.kind !== "company") continue;
       const prev = await previousEconomicValue(env, orgId, "stock_price", targetDate);
@@ -279,8 +290,8 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       .bind(targetDate, eventId, newsDraft.title, now())
       .run();
 
-    await env.DB.prepare("UPDATE world SET current_date = ?, updated_at = ? WHERE id = 1")
-      .bind(targetDate, now())
+    await env.DB.prepare("UPDATE world SET current_date = ?, last_published_at = ?, updated_at = ? WHERE id = 1")
+      .bind(targetDate, now(), now())
       .run();
 
     await env.DB.prepare(

@@ -12,5 +12,15 @@ export const PERSON_STATUSES = [
 ] as const;
 export type PersonStatus = (typeof PERSON_STATUSES)[number];
 
-export const ORG_STATUSES = ["active", "expanding", "under_investigation", "recovering", "celebrating"] as const;
+export const ORG_STATUSES = [
+  "active",
+  "expanding",
+  "under_investigation",
+  "recovering",
+  "celebrating",
+  "bankrupt",
+] as const;
 export type OrgStatus = (typeof ORG_STATUSES)[number];
+
+export const ORG_KINDS = ["company", "government", "school", "other"] as const;
+export type OrgKind = (typeof ORG_KINDS)[number];

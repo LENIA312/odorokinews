@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import type { Env } from "./types";
 import {
+  clearPeopleOrganization,
+  createOrganization,
   getCity,
   getEvent,
   getNews,
@@ -31,7 +33,7 @@ import {
   updateWorldAutoPublishTimes,
 } from "./db/queries";
 import { html } from "./utils/html";
-import { NEWS_CATEGORIES, ORG_STATUSES, PERSON_STATUSES } from "./constants";
+import { NEWS_CATEGORIES, ORG_KINDS, ORG_STATUSES, PERSON_STATUSES } from "./constants";
 import { page } from "./views/layout";
 import { newsListSection, categoryTabs } from "./views/newsList";
 import { newsDetailView } from "./views/newsDetail";
@@ -43,9 +45,15 @@ import { economyView } from "./views/economy";
 import { notFoundView } from "./views/notFound";
 import { adminDashboardPage } from "./views/admin";
 import { mapView } from "./views/map";
-import { assignPersonZones, ORG_ZONE_BY_ID } from "./views/mapZones";
+import {
+  assignNewOrgPosition,
+  assignPersonZones,
+  buildAllEdges,
+  buildAllZones,
+  orgZoneId,
+} from "./views/mapZones";
 import { runDailySimulation } from "./simulation/runDailySimulation";
-import { findDueSlot, parseAutoPublishTimes } from "./simulation/schedule";
+import { findDueSlot, nextSlotUtcMillis, parseAutoPublishTimes } from "./simulation/schedule";
 import type { EconomicDataRow, OrganizationRow, PersonRow, RelationshipRow } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -213,13 +221,15 @@ app.get("/economy", async (c) => {
 });
 
 app.get("/map", async (c) => {
-  const world = await getWorld(c.env);
+  const [world, orgs] = await Promise.all([getWorld(c.env), listOrganizations(c.env)]);
+  const zones = buildAllZones(orgs.results ?? []);
+  const edges = buildAllEdges(zones, orgs.results ?? []);
   return c.html(
     page({
       title: "街の様子",
       activePath: "/map",
       worldDate: world?.current_date,
-      body: mapView(),
+      body: mapView(zones, edges),
     }).value
   );
 });
@@ -230,12 +240,12 @@ app.get("/api/map/people", async (c) => {
     listOrganizations(c.env),
     listNews(c.env, 1),
   ]);
+  const orgList = orgs.results ?? [];
 
   const zoneStatus: Record<string, string> = {};
-  for (const org of orgs.results ?? []) {
-    const zoneId = ORG_ZONE_BY_ID[org.id];
-    if (zoneId && org.status !== "active") {
-      zoneStatus[zoneId] = org.status;
+  for (const org of orgList) {
+    if (org.status !== "active") {
+      zoneStatus[orgZoneId(org.id)] = org.status;
     }
   }
 
@@ -244,9 +254,7 @@ app.get("/api/map/people", async (c) => {
     ? {
         newsId: latest.id,
         headline: latest.title,
-        zoneIds: parseIdArray(latest.related_organizations)
-          .map((id) => ORG_ZONE_BY_ID[id])
-          .filter((z): z is string => Boolean(z)),
+        zoneIds: parseIdArray(latest.related_organizations).map((id) => orgZoneId(id)),
       }
     : null;
 
@@ -260,6 +268,20 @@ app.get("/api/map/people", async (c) => {
 app.get("/api/health", async (c) => {
   const world = await getWorld(c.env);
   return c.json({ status: "ok", worldDate: world?.current_date ?? null });
+});
+
+// ヘッダーの「モーゼンの時計」が秒単位で刻む時計を描画するための情報。
+// 直近の配信時刻から次の配信予定時刻までの進み具合を元に、
+// 世界の1日(24時間)の中の「今」を割り出す。
+app.get("/api/clock", async (c) => {
+  const world = await getWorld(c.env);
+  if (!world) return c.json({ error: "world not found" }, 500);
+  const nextMs = nextSlotUtcMillis(new Date(), world.auto_publish_times);
+  return c.json({
+    worldDate: world.current_date,
+    lastPublishedAt: world.last_published_at,
+    nextPublishAt: nextMs ? new Date(nextMs).toISOString() : null,
+  });
 });
 
 // 管理画面（/admin）。トークン入力・表示自体は誰でも開けるが、
@@ -465,10 +487,51 @@ app.get("/api/admin/economy-list", async (c) => {
       kind: o.kind,
       status: o.status,
       description: o.description,
+      industry: o.industry,
+      employeeScale: o.employee_scale,
+      foundedYear: o.founded_year,
       stockPrice: latestByOrg.get(o.id) ?? null,
     })),
     priceIndex: priceIndex?.value ?? null,
   });
+});
+
+app.post("/api/admin/organizations", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const name = typeof body?.name === "string" ? body.name.trim().slice(0, 40) : "";
+  if (!name) return c.json({ error: "name is required" }, 400);
+  const kind = typeof body?.kind === "string" && (ORG_KINDS as readonly string[]).includes(body.kind)
+    ? body.kind
+    : "company";
+  const description =
+    typeof body?.description === "string" && body.description.trim() ? body.description.trim().slice(0, 200) : null;
+  const industry = typeof body?.industry === "string" && body.industry.trim() ? body.industry.trim().slice(0, 30) : null;
+  const employeeScale =
+    typeof body?.employeeScale === "string" && body.employeeScale.trim() ? body.employeeScale.trim().slice(0, 20) : null;
+  const foundedYear =
+    typeof body?.foundedYear === "number" && Number.isInteger(body.foundedYear) ? body.foundedYear : null;
+
+  const world = await getWorld(c.env);
+  const orgs = await listOrganizations(c.env);
+  const orgList = orgs.results ?? [];
+  const zones = buildAllZones(orgList);
+  const pos = assignNewOrgPosition(zones.map((z) => ({ x: z.x, y: z.y })));
+
+  const id = await createOrganization(c.env, {
+    name,
+    kind,
+    city_id: 1,
+    description,
+    industry,
+    employee_scale: employeeScale,
+    founded_year: foundedYear,
+    map_x: pos.x,
+    map_y: pos.y,
+  });
+
+  return c.json({ ok: true, id, worldDate: world?.current_date ?? null, position: pos });
 });
 
 app.put("/api/admin/organizations/:id", async (c) => {
@@ -476,15 +539,44 @@ app.put("/api/admin/organizations/:id", async (c) => {
   if (authError) return authError;
   const id = Number(c.req.param("id"));
   if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const existing = await getOrganization(c.env, id);
+  if (!existing) return c.json({ error: "not found" }, 404);
+
   const body = await c.req.json().catch(() => null);
+  const name = typeof body?.name === "string" && body.name.trim() ? body.name.trim().slice(0, 40) : existing.name;
+  const kind = typeof body?.kind === "string" && (ORG_KINDS as readonly string[]).includes(body.kind)
+    ? body.kind
+    : existing.kind;
   const status = typeof body?.status === "string" && (ORG_STATUSES as readonly string[]).includes(body.status)
     ? body.status
     : null;
   if (!status) return c.json({ error: "invalid status" }, 400);
   const description =
     typeof body?.description === "string" && body.description.trim() ? body.description.trim().slice(0, 200) : null;
-  await updateOrganizationAdmin(c.env, id, { status, description });
-  return c.json({ ok: true });
+  const industry = typeof body?.industry === "string" && body.industry.trim() ? body.industry.trim().slice(0, 30) : null;
+  const employeeScale =
+    typeof body?.employeeScale === "string" && body.employeeScale.trim() ? body.employeeScale.trim().slice(0, 20) : null;
+  const foundedYear =
+    typeof body?.foundedYear === "number" && Number.isInteger(body.foundedYear) ? body.foundedYear : null;
+
+  await updateOrganizationAdmin(c.env, id, {
+    name,
+    kind,
+    status,
+    description,
+    industry,
+    employee_scale: employeeScale,
+    founded_year: foundedYear,
+  });
+
+  // 倒産(bankrupt)になった場合、そこに勤めていた人物を無所属に戻す。
+  let clearedEmployees = 0;
+  if (status === "bankrupt" && existing.status !== "bankrupt") {
+    const result = await clearPeopleOrganization(c.env, id);
+    clearedEmployees = result.meta.changes ?? 0;
+  }
+
+  return c.json({ ok: true, clearedEmployees });
 });
 
 app.post("/api/admin/economy/stock", async (c) => {

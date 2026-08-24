@@ -1,11 +1,11 @@
-// 「街の様子」ページ用の、ダイナン市の簡易ゾーン配置。
+// 「街の様子」ページ用の、ダイナン市のゾーン配置。
 // 実在の地理データではなく、docs.mdの世界設定に基づく抽象的な模式図として扱う。
-// 座標はSVG viewBox "0 0 1400 900" 上の位置。
 //
-// 格子状の道路ではなく、施設同士を直接結ぶ道のネットワーク（グラフ）として
-// 表現する。人物はこのグラフ上を最短経路で移動する。
+// 住宅街・大学・公園・商店街は固定ゾーンとしてここにハードコードする。
+// 企業・行政などの組織ゾーンは organizations テーブル(map_x/map_y)を基に
+// 動的に構築し、新しい企業が追加されるたびに地図が自動的に広がっていく。
 
-import type { PersonRow } from "../types";
+import type { OrganizationRow, PersonRow } from "../types";
 
 export interface Zone {
   id: string;
@@ -13,52 +13,137 @@ export interface Zone {
   x: number;
   y: number;
   kind: "org" | "residential" | "other";
+  status?: string; // orgゾーンのみ。'active'以外なら地図上にリングを表示する。
 }
 
-export const ZONES: Zone[] = [
+export const FIXED_ZONES: Zone[] = [
   { id: "university", label: "ダイナン工科大学", x: 280, y: 220, kind: "other" },
   { id: "residential_n", label: "住宅街・北", x: 380, y: 480, kind: "residential" },
-  { id: "city_hall", label: "ダイナン市役所", x: 650, y: 430, kind: "org" },
-  { id: "hospital", label: "ダイナン中央病院", x: 560, y: 260, kind: "org" },
-  { id: "fairy_center", label: "妖精人材センター", x: 700, y: 260, kind: "org" },
   { id: "shopping_street", label: "商店街", x: 820, y: 470, kind: "other" },
   { id: "park", label: "中央公園", x: 980, y: 240, kind: "other" },
-  { id: "soukai_hq", label: "蒼海重工本社", x: 1180, y: 400, kind: "org" },
-  { id: "dragon_terminal", label: "翼竜急便ターミナル", x: 1230, y: 610, kind: "org" },
   { id: "residential_e", label: "住宅街・東", x: 960, y: 610, kind: "residential" },
-  { id: "moonlight_plant", label: "ムーンライト魔法発電", x: 1060, y: 760, kind: "org" },
   { id: "residential_s", label: "住宅街・南", x: 630, y: 760, kind: "residential" },
 ];
 
-// 道路網（グラフの辺）。格子ではなく施設同士を直接結ぶ。
-// [ゾーンA, ゾーンB, 川を橋で渡るか]
-export const ROAD_EDGES: [string, string, boolean?][] = [
+// 固定ゾーン同士、および創業当初からの6組織を結ぶ道路網。
+// 創業6組織は org-<id> ではなく歴史的な固定IDのまま扱う
+// （すでにmigrationで座標をorganizationsテーブル側にも複製済み）。
+export const FIXED_EDGES: [string, string][] = [
   ["university", "residential_n"],
-  ["residential_n", "city_hall"],
-  ["city_hall", "hospital"],
-  ["city_hall", "fairy_center"],
-  ["city_hall", "shopping_street"],
-  ["hospital", "park"],
-  ["fairy_center", "park"],
+  ["residential_n", "org-1"],
+  ["org-1", "org-4"],
+  ["org-1", "org-6"],
+  ["org-1", "shopping_street"],
+  ["org-4", "park"],
+  ["org-6", "park"],
   ["shopping_street", "residential_e"],
-  ["shopping_street", "soukai_hq", true],
-  ["residential_e", "moonlight_plant"],
-  ["residential_e", "dragon_terminal", true],
-  ["soukai_hq", "dragon_terminal"],
-  ["residential_s", "city_hall"],
-  ["residential_s", "moonlight_plant"],
+  ["shopping_street", "org-2"],
+  ["residential_e", "org-3"],
+  ["residential_e", "org-5"],
+  ["org-2", "org-5"],
+  ["residential_s", "org-1"],
+  ["residential_s", "org-3"],
 ];
 
-// 現状のseed.sqlで作成される組織ID(1〜6)に対応するゾーン。
-// 組織の並びが変わった場合はここも合わせて更新する。
-export const ORG_ZONE_BY_ID: Record<number, string> = {
-  1: "city_hall",
-  2: "soukai_hq",
-  3: "moonlight_plant",
-  4: "hospital",
-  5: "dragon_terminal",
-  6: "fairy_center",
-};
+export function orgZoneId(orgId: number): string {
+  return `org-${orgId}`;
+}
+
+function distance(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+/**
+ * 既存ゾーン群の外側に、新しい組織ゾーンの座標を自動的に割り当てる。
+ * 「マップのエリア拡大も積極的に行う」ため、既存の範囲の外へ広げていく。
+ */
+export function assignNewOrgPosition(existingZones: { x: number; y: number }[]): { x: number; y: number } {
+  if (existingZones.length === 0) return { x: 650, y: 430 };
+
+  const xs = existingZones.map((z) => z.x);
+  const ys = existingZones.map((z) => z.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const baseRadius = Math.max(maxX - minX, maxY - minY) / 2 + 220;
+
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const angle = ((attempt * 53) % 360) * (Math.PI / 180);
+    const radius = baseRadius + Math.floor(attempt / 8) * 200;
+    const x = Math.round(cx + Math.cos(angle) * radius);
+    const y = Math.round(cy + Math.sin(angle) * radius * 0.6);
+    const tooClose = existingZones.some((z) => distance(z, { x, y }) < 170);
+    if (!tooClose) return { x, y };
+  }
+  return { x: Math.round(cx + baseRadius), y: Math.round(cy) };
+}
+
+/** 新しいゾーンを、最も近い既存ゾーンへの1本の道でつなぐ。 */
+export function nearestZoneId(point: { x: number; y: number }, zones: Zone[]): string | null {
+  let best: Zone | null = null;
+  let bestDist = Infinity;
+  for (const z of zones) {
+    const d = distance(point, z);
+    if (d < bestDist) {
+      bestDist = d;
+      best = z;
+    }
+  }
+  return best ? best.id : null;
+}
+
+/** organizations テーブルの内容から、組織ゾーンの一覧を構築する。 */
+export function buildOrgZones(organizations: OrganizationRow[]): Zone[] {
+  return organizations
+    .filter((o) => o.map_x != null && o.map_y != null)
+    .map((o) => ({
+      id: orgZoneId(o.id),
+      label: o.name,
+      x: o.map_x as number,
+      y: o.map_y as number,
+      kind: "org" as const,
+      status: o.status,
+    }));
+}
+
+/** 固定ゾーン+組織ゾーンを合わせた全ゾーン一覧を返す。 */
+export function buildAllZones(organizations: OrganizationRow[]): Zone[] {
+  return [...FIXED_ZONES, ...buildOrgZones(organizations)];
+}
+
+/**
+ * FIXED_EDGESに加え、創業6組織以外の組織ゾーンについては
+ * 最寄りのゾーンへ自動的に道をつなぐ。
+ */
+export function buildAllEdges(zones: Zone[], organizations: OrganizationRow[]): [string, string][] {
+  const fixedOrgIds = new Set(FIXED_EDGES.flatMap((e) => e));
+  const edges: [string, string][] = [...FIXED_EDGES];
+  const placed: Zone[] = [...FIXED_ZONES];
+
+  // FIXED_EDGESに登場する創業組織ゾーンを先に「配置済み」として扱う。
+  for (const org of organizations) {
+    const zid = orgZoneId(org.id);
+    if (fixedOrgIds.has(zid)) {
+      const z = zones.find((zz) => zz.id === zid);
+      if (z) placed.push(z);
+    }
+  }
+
+  for (const org of organizations) {
+    const zid = orgZoneId(org.id);
+    if (fixedOrgIds.has(zid)) continue; // 創業組織はFIXED_EDGESで接続済み
+    const zone = zones.find((z) => z.id === zid);
+    if (!zone) continue;
+    const nearest = nearestZoneId(zone, placed);
+    if (nearest) edges.push([zid, nearest]);
+    placed.push(zone);
+  }
+
+  return edges;
+}
 
 const RESIDENTIAL_ZONES = ["residential_n", "residential_s", "residential_e"];
 
@@ -82,8 +167,8 @@ export function assignPersonZones(people: PersonRow[]): PersonZoneAssignment[] {
     const homeZone = RESIDENTIAL_ZONES[homeIndex];
 
     let workZone: string;
-    if (p.organization_id && ORG_ZONE_BY_ID[p.organization_id]) {
-      workZone = ORG_ZONE_BY_ID[p.organization_id];
+    if (p.organization_id) {
+      workZone = orgZoneId(p.organization_id);
     } else {
       const occ = p.occupation ?? "";
       if (occ.includes("学生")) {

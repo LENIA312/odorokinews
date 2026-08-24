@@ -1,5 +1,5 @@
 import { html, raw, RawHtml } from "../utils/html";
-import { ROAD_EDGES, ZONES, type Zone } from "./mapZones";
+import type { Zone } from "./mapZones";
 
 const ZONE_COLOR: Record<Zone["kind"], string> = {
   org: "#5b7fd9",
@@ -13,15 +13,21 @@ function escapeXml(s: string): string {
 
 // ゾーン種別ごとに、簡易的な建物・街並みのアイコンをSVGとして描く。
 function zoneIcon(z: Zone): string {
-  const color = ZONE_COLOR[z.kind];
+  const color = z.status === "bankrupt" ? "#8a8a8a" : ZONE_COLOR[z.kind];
 
   if (z.kind === "org") {
+    const closed =
+      z.status === "bankrupt"
+        ? '<line x1="-14" y1="-4" x2="14" y2="14" stroke="#c0392b" stroke-width="2.5"></line>' +
+          '<line x1="14" y1="-4" x2="-14" y2="14" stroke="#c0392b" stroke-width="2.5"></line>'
+        : "";
     return (
       '<polygon points="-15,-4 0,-17 15,-4" fill="#7a6a52"></polygon>' +
       '<rect x="-14" y="-4" width="28" height="19" rx="1.5" fill="' + color + '"></rect>' +
       '<rect x="-3.5" y="6" width="7" height="9" fill="#3a3630"></rect>' +
       '<rect x="-10" y="-1" width="5" height="5" fill="#eef2fb" opacity="0.85"></rect>' +
-      '<rect x="5" y="-1" width="5" height="5" fill="#eef2fb" opacity="0.85"></rect>'
+      '<rect x="5" y="-1" width="5" height="5" fill="#eef2fb" opacity="0.85"></rect>' +
+      closed
     );
   }
 
@@ -72,7 +78,7 @@ function zoneIcon(z: Zone): string {
     );
   }
 
-  // shopping_street
+  // shopping_street およびその他の固定ゾーン
   var stall = function (dx: number, stripe: string) {
     return (
       '<g transform="translate(' + dx + ',0)">' +
@@ -85,12 +91,33 @@ function zoneIcon(z: Zone): string {
   return stall(-16, "#d9855f") + stall(0, color) + stall(16, "#d9855f");
 }
 
-const zoneById: Record<string, Zone> = {};
-ZONES.forEach((z) => (zoneById[z.id] = z));
+interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+// 装飾（川・海岸線など）を配置している「旧市街」の範囲。
+// ゾーンがこの範囲より外に広がった場合のみ、表示範囲を拡張する。
+const NATURAL_BOUNDS: Bounds = { minX: 0, minY: 0, maxX: 1400, maxY: 900 };
+
+function computeBounds(zones: Zone[]): Bounds {
+  const pad = 200;
+  const xs = zones.map((z) => z.x);
+  const ys = zones.map((z) => z.y);
+  return {
+    minX: Math.min(NATURAL_BOUNDS.minX, ...xs.map((x) => x - pad)),
+    minY: Math.min(NATURAL_BOUNDS.minY, ...ys.map((y) => y - pad)),
+    maxX: Math.max(NATURAL_BOUNDS.maxX, ...xs.map((x) => x + pad)),
+    maxY: Math.max(NATURAL_BOUNDS.maxY, ...ys.map((y) => y + pad)),
+  };
+}
 
 // 地形の装飾（川・橋・丘・森・湿地・海岸線・方位記号・縮尺・外枠）。
-// 「きれいすぎる街並み」を避け、地形に凹凸と個性を持たせるための演出。
-function terrain(): string {
+// 川や丘などは「旧市街」の固定位置に描き、方位記号・縮尺・外枠だけは
+// 実際の表示範囲(bounds)に合わせて動かす。
+function terrain(bounds: Bounds): string {
   const river =
     '<path d="M 1040,-20 C 990,140 1090,260 1010,420 C 940,560 1070,640 1000,780 C 960,860 1010,900 1010,900" ' +
     'fill="none" stroke="#a9cdd8" stroke-width="34" stroke-linecap="round"></path>' +
@@ -115,7 +142,7 @@ function terrain(): string {
   const forestTree = (dx: number, dy: number, r: number) =>
     '<circle cx="' + dx + '" cy="' + dy + '" r="' + r + '" fill="#4f8f63" opacity="0.55"></circle>';
   const forest =
-    '<g>' +
+    "<g>" +
     forestTree(1080, 150, 22) + forestTree(1130, 190, 18) + forestTree(1060, 210, 16) +
     forestTree(880, 190, 14) + forestTree(920, 160, 18) +
     "</g>";
@@ -133,14 +160,14 @@ function terrain(): string {
     'fill="none" stroke="#9cc0cb" stroke-width="2"></path>';
 
   const compass =
-    '<g transform="translate(1330,60)">' +
+    '<g transform="translate(' + (bounds.maxX - 70) + "," + (bounds.minY + 60) + ')">' +
     '<circle r="30" fill="#faf7ee" stroke="#c9bd9c" stroke-width="1.5"></circle>' +
     '<polygon points="0,-20 6,4 0,-5 -6,4" fill="#9c2b2b"></polygon>' +
     '<text x="0" y="-25" text-anchor="middle" font-size="11" fill="#4a473c" font-family="Georgia, serif">N</text>' +
     "</g>";
 
   const scaleBar =
-    '<g transform="translate(50,850)">' +
+    '<g transform="translate(' + (bounds.minX + 50) + "," + (bounds.maxY - 50) + ')">' +
     '<line x1="0" y1="0" x2="100" y2="0" stroke="#6b6650" stroke-width="2"></line>' +
     '<line x1="0" y1="-5" x2="0" y2="5" stroke="#6b6650" stroke-width="2"></line>' +
     '<line x1="100" y1="-5" x2="100" y2="5" stroke="#6b6650" stroke-width="2"></line>' +
@@ -148,56 +175,54 @@ function terrain(): string {
     "</g>";
 
   const frame =
-    '<rect x="6" y="6" width="1388" height="888" fill="none" stroke="#c9bd9c" stroke-width="2"></rect>' +
-    '<rect x="12" y="12" width="1376" height="876" fill="none" stroke="#c9bd9c" stroke-width="1"></rect>';
+    '<rect x="' + (bounds.minX + 6) + '" y="' + (bounds.minY + 6) + '" width="' + (bounds.maxX - bounds.minX - 12) +
+    '" height="' + (bounds.maxY - bounds.minY - 12) + '" fill="none" stroke="#c9bd9c" stroke-width="2"></rect>';
 
   return hills + forest + marsh + coastline + river + bridges + compass + scaleBar + frame;
 }
 
 // 施設同士を結ぶ道路網（格子ではなく、辺のリストとしてのグラフ）。
 // 直線ではなくわずかに湾曲させ、手描きの街路っぽさを出す。
-function roadNetwork(): string {
-  return ROAD_EDGES.map(function (edge, i) {
-    const a = zoneById[edge[0]];
-    const b = zoneById[edge[1]];
-    if (!a || !b) return "";
-    const mx = (a.x + b.x) / 2;
-    const my = (a.y + b.y) / 2;
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const len = Math.sqrt(dx * dx + dy * dy) || 1;
-    // 辺ごとに固定の向きへわずかにオフセットして、直線的すぎないようにする。
-    const bow = (i % 2 === 0 ? 1 : -1) * Math.min(28, len * 0.12);
-    const offX = (-dy / len) * bow;
-    const offY = (dx / len) * bow;
-    const cx = mx + offX;
-    const cy = my + offY;
-    const path = "M " + a.x + "," + a.y + " Q " + cx + "," + cy + " " + b.x + "," + b.y;
-    return (
-      '<path d="' + path + '" fill="none" stroke="#d8cfb8" stroke-width="9" stroke-linecap="round"></path>' +
-      '<path d="' + path + '" fill="none" stroke="#efe9d8" stroke-width="1.8" stroke-dasharray="7 8" stroke-linecap="round"></path>'
-    );
-  }).join("");
+function roadNetwork(zoneById: Record<string, Zone>, edges: [string, string][]): string {
+  return edges
+    .map(function (edge, i) {
+      const a = zoneById[edge[0]];
+      const b = zoneById[edge[1]];
+      if (!a || !b) return "";
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.sqrt(dx * dx + dy * dy) || 1;
+      const bow = (i % 2 === 0 ? 1 : -1) * Math.min(28, len * 0.12);
+      const offX = (-dy / len) * bow;
+      const offY = (dx / len) * bow;
+      const cx = mx + offX;
+      const cy = my + offY;
+      const path = "M " + a.x + "," + a.y + " Q " + cx + "," + cy + " " + b.x + "," + b.y;
+      return (
+        '<path d="' + path + '" fill="none" stroke="#d8cfb8" stroke-width="9" stroke-linecap="round"></path>' +
+        '<path d="' + path + '" fill="none" stroke="#efe9d8" stroke-width="1.8" stroke-dasharray="7 8" stroke-linecap="round"></path>'
+      );
+    })
+    .join("");
 }
 
-function zoneMarkers(): string {
-  var zones = ZONES.map(function (z) {
-    return (
-      '<g id="zone-' + z.id + '" transform="translate(' + z.x + "," + z.y + ") scale(1.25)\">" +
-      '<circle class="status-ring" r="22" fill="none" stroke-width="2.6" opacity="0"></circle>' +
-      '<circle class="spotlight-ring" r="27" fill="none" stroke-width="2.2" opacity="0"></circle>' +
-      zoneIcon(z) +
-      '<text x="0" y="28" text-anchor="middle" font-size="10" fill="#4a473c" font-family="Hiragino Sans, Noto Sans JP, sans-serif">' +
-      escapeXml(z.label) +
-      "</text></g>"
-    );
-  }).join("");
-
-  return (
-    '<g id="terrainLayer">' + terrain() + "</g>" +
-    '<g id="roadsLayer">' + roadNetwork() + "</g>" +
-    '<g id="zonesLayer">' + zones + "</g>"
-  );
+function zoneMarkers(zones: Zone[]): string {
+  var markers = zones
+    .map(function (z) {
+      return (
+        '<g id="zone-' + z.id + '" transform="translate(' + z.x + "," + z.y + ') scale(1.25)">' +
+        '<circle class="status-ring" r="22" fill="none" stroke-width="2.6" opacity="0"></circle>' +
+        '<circle class="spotlight-ring" r="27" fill="none" stroke-width="2.2" opacity="0"></circle>' +
+        zoneIcon(z) +
+        '<text x="0" y="28" text-anchor="middle" font-size="10" fill="#4a473c" font-family="Hiragino Sans, Noto Sans JP, sans-serif">' +
+        escapeXml(z.label) +
+        "</text></g>"
+      );
+    })
+    .join("");
+  return markers;
 }
 
 const STYLE_EXTRA = [
@@ -216,18 +241,31 @@ const STYLE_EXTRA = [
   ".status-ring.active { opacity: 0.9; }",
 ].join("\n");
 
-export function mapView(): RawHtml {
+export function mapView(zones: Zone[], edges: [string, string][]): RawHtml {
+  const zoneById: Record<string, Zone> = {};
+  zones.forEach((z) => (zoneById[z.id] = z));
+  const bounds = computeBounds(zones);
+  const viewBox =
+    Math.round(bounds.minX) + " " + Math.round(bounds.minY) + " " +
+    Math.round(bounds.maxX - bounds.minX) + " " + Math.round(bounds.maxY - bounds.minY);
+
+  const svgBody =
+    '<g id="terrainLayer">' + terrain(bounds) + "</g>" +
+    '<g id="roadsLayer">' + roadNetwork(zoneById, edges) + "</g>" +
+    '<g id="zonesLayer">' + zoneMarkers(zones) + "</g>";
+
   // <script>タグ内に埋め込むため、</script> 等でタグが閉じられないように</の出現を無害化する。
-  const zonesJson = JSON.stringify(ZONES).replace(/</g, "\\u003c");
-  const edgesJson = JSON.stringify(ROAD_EDGES.map((e) => [e[0], e[1]])).replace(/</g, "\\u003c");
+  const zonesJson = JSON.stringify(zones).replace(/</g, "\\u003c");
+  const edgesJson = JSON.stringify(edges).replace(/</g, "\\u003c");
+  const boundsJson = JSON.stringify(bounds).replace(/</g, "\\u003c");
 
   return html`<h2 class="section-title">街の様子</h2>
     <style>${raw(STYLE_EXTRA)}</style>
     <div id="clock">読み込み中...</div>
     <div id="spotlight"></div>
-    <svg id="cityMap" viewBox="0 0 1400 900" xmlns="http://www.w3.org/2000/svg">
-      <rect id="mapBg" x="0" y="0" width="1400" height="900"></rect>
-      ${raw(zoneMarkers())}
+    <svg id="cityMap" viewBox="${viewBox}" xmlns="http://www.w3.org/2000/svg">
+      <rect id="mapBg" x="${Math.round(bounds.minX)}" y="${Math.round(bounds.minY)}" width="${Math.round(bounds.maxX - bounds.minX)}" height="${Math.round(bounds.maxY - bounds.minY)}"></rect>
+      ${raw(svgBody)}
       <g id="peopleLayer"></g>
     </svg>
     <div class="legend">
@@ -239,10 +277,11 @@ export function mapView(): RawHtml {
       <span><span class="dot" style="background:#a34bb0"></span>入院中</span>
       <span><span class="dot" style="background:#8a8a8a"></span>故人</span>
     </div>
-    <div id="personTip">人物の点をクリックすると名前が表示されます。施設が赤い枠で囲まれている場合は調査中、金色は好調・拡大中を表します。</div>
+    <div id="personTip">人物の点をクリックすると名前が表示されます。施設が赤い枠で囲まれている場合は調査中、金色は好調・拡大中、グレーに×は倒産を表します。</div>
     <script>
       window.__ZONES__ = ${raw(zonesJson)};
       window.__EDGES__ = ${raw(edgesJson)};
+      window.__BOUNDS__ = ${raw(boundsJson)};
     </script>
     <script>${raw(CLIENT_SCRIPT)}</script>`;
 }
@@ -252,8 +291,10 @@ const CLIENT_SCRIPT = [
   "(function () {",
   "  var ZONES = window.__ZONES__ || [];",
   "  var EDGES = window.__EDGES__ || [];",
+  "  var BOUNDS = window.__BOUNDS__ || { minX: 0, minY: 0, maxX: 1400, maxY: 900 };",
   "  var zoneById = {};",
   "  ZONES.forEach(function (z) { zoneById[z.id] = z; });",
+  "  var hospitalZone = ZONES.filter(function (z) { return z.kind === 'org' && z.label.indexOf('病院') !== -1; })[0] || null;",
   "  var adjacency = {};",
   "  ZONES.forEach(function (z) { adjacency[z.id] = []; });",
   "  EDGES.forEach(function (e) {",
@@ -261,7 +302,7 @@ const CLIENT_SCRIPT = [
   "    if (adjacency[e[1]]) adjacency[e[1]].push(e[0]);",
   "  });",
   "",
-  "  // 12ノード程度の小さいグラフなのでBFSで十分。",
+  "  // 数十ノード程度の小さいグラフなのでBFSで十分。",
   "  function shortestPath(fromId, toId) {",
   "    if (fromId === toId) return [fromId];",
   "    var visited = {};",
@@ -309,6 +350,7 @@ const CLIENT_SCRIPT = [
   "    expanding: '#d4a017',",
   "    celebrating: '#d4a017',",
   "    recovering: '#5b7fd9',",
+  "    bankrupt: '#6b6650',",
   "  };",
   "",
   "  function lerp(a, b, t) { return a + (b - a) * t; }",
@@ -333,7 +375,7 @@ const CLIENT_SCRIPT = [
   "",
   "  // 複数区間からなる経路上を、区間の距離に応じた時間配分でイージング移動する。",
   "  function polylinePosition(points, t) {",
-  "    if (points.length < 2) return points[0] || { x: 700, y: 450 };",
+  "    if (points.length < 2) return points[0] || { x: (BOUNDS.minX + BOUNDS.maxX) / 2, y: (BOUNDS.minY + BOUNDS.maxY) / 2 };",
   "    var legLens = [];",
   "    var total = 0;",
   "    for (var i = 0; i < points.length - 1; i++) {",
@@ -355,12 +397,11 @@ const CLIENT_SCRIPT = [
   "    return points[points.length - 1];",
   "  }",
   "",
-  "  // 0-24のシミュレーション上の時刻から、人物ごとの現在位置を計算する。",
+  "  // 0-24の時刻から、人物ごとの現在位置を計算する。",
   "  // 入院中/故人はニュースの状態を優先し、通常の通勤ロジックより先に位置を固定する。",
   "  function computePosition(person, hour, realSeconds) {",
-  "    if (person.status === 'hospitalized') {",
-  "      var hospital = zoneById.hospital;",
-  "      if (hospital) return wander(hospital.x, hospital.y, person.id, realSeconds);",
+  "    if (person.status === 'hospitalized' && hospitalZone) {",
+  "      return wander(hospitalZone.x, hospitalZone.y, person.id, realSeconds);",
   "    }",
   "    if (person.status === 'deceased') {",
   "      var restingZone = zoneById[person.homeZone];",
@@ -369,7 +410,7 @@ const CLIENT_SCRIPT = [
   "",
   "    var home = zoneById[person.homeZone];",
   "    var work = zoneById[person.workZone];",
-  "    if (!home || !work) return { x: 700, y: 450 };",
+  "    if (!home || !work) return { x: (BOUNDS.minX + BOUNDS.maxX) / 2, y: (BOUNDS.minY + BOUNDS.maxY) / 2 };",
   "    if (home.id === work.id) return wander(home.x, home.y, person.id, realSeconds);",
   "",
   "    var jitter = (person.id * 37) % 60 / 60; // 0-1の個人差",
@@ -460,7 +501,7 @@ const CLIENT_SCRIPT = [
   "    });",
   "  }",
   "",
-  "  var DAY_SECONDS = 3600; // 現実1時間でシミュレーション上の24時間が経過する",
+  "  var DAY_SECONDS = 3600; // 現実1時間で1日ぶんの体感時間が経過する",
   "",
   "  function pad(n) { return (n < 10 ? '0' : '') + n; }",
   "",
@@ -482,19 +523,19 @@ const CLIENT_SCRIPT = [
   "    requestAnimationFrame(tick);",
   "  }",
   "",
-  "  // ピンチ/ホイールでの拡大縮小とドラッグでの移動（viewBoxを直接操作する）。",
+  "  // ホイールでの拡大縮小とドラッグでの移動（viewBoxを直接操作する）。",
   "  (function enablePanZoom() {",
   "    var svg = document.getElementById('cityMap');",
-  "    var view = { x: 0, y: 0, w: 1400, h: 900 };",
-  "    var FULL = { x: 0, y: 0, w: 1400, h: 900 };",
+  "    var FULL = { x: BOUNDS.minX, y: BOUNDS.minY, w: BOUNDS.maxX - BOUNDS.minX, h: BOUNDS.maxY - BOUNDS.minY };",
+  "    var view = { x: FULL.x, y: FULL.y, w: FULL.w, h: FULL.h };",
   "    function applyView() {",
   "      svg.setAttribute('viewBox', view.x + ' ' + view.y + ' ' + view.w + ' ' + view.h);",
   "    }",
   "    function clamp() {",
   "      view.w = Math.max(300, Math.min(FULL.w, view.w));",
   "      view.h = view.w * (FULL.h / FULL.w);",
-  "      view.x = Math.max(0, Math.min(FULL.w - view.w, view.x));",
-  "      view.y = Math.max(0, Math.min(FULL.h - view.h, view.y));",
+  "      view.x = Math.max(FULL.x, Math.min(FULL.x + FULL.w - view.w, view.x));",
+  "      view.y = Math.max(FULL.y, Math.min(FULL.y + FULL.h - view.h, view.y));",
   "    }",
   "    svg.addEventListener('wheel', function (ev) {",
   "      ev.preventDefault();",
@@ -535,6 +576,6 @@ const CLIENT_SCRIPT = [
   "  loadMapData().then(function () {",
   "    requestAnimationFrame(tick);",
   "  });",
-  "  setInterval(loadMapData, 60000); // 新しい人物・状態変化・注目ニュースを反映",
+  "  setInterval(loadMapData, 60000); // 新しい人物・状態変化・注目ニュース・新しい施設を反映",
   "})();",
 ].join("\n");

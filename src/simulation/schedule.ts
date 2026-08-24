@@ -40,3 +40,30 @@ export function findDueSlot(nowUtc: Date, autoPublishTimesJson: string, lastSlot
 
   return due.length ? due[due.length - 1] : null;
 }
+
+function jstSlotToUtcMillis(slot: string): number {
+  const [datePart, timePart] = slot.split(" ");
+  const [y, m, d] = datePart.split("-").map(Number);
+  const [hh, mm] = timePart.split(":").map(Number);
+  return Date.UTC(y, m - 1, d, hh, mm) - 9 * 60 * 60 * 1000;
+}
+
+/**
+ * 現在時刻より後に来る、次の配信予定時刻をUTCのミリ秒で返す（ヘッダー時計用）。
+ * 設定が空なら null。
+ */
+export function nextSlotUtcMillis(nowUtc: Date, autoPublishTimesJson: string): number | null {
+  const times = parseAutoPublishTimes(autoPublishTimesJson);
+  if (times.length === 0) return null;
+
+  const candidates: number[] = [];
+  for (const offsetDays of [0, 1]) {
+    const shifted = new Date(nowUtc.getTime() + 9 * 60 * 60 * 1000 + offsetDays * 24 * 60 * 60 * 1000);
+    const dayStr = shifted.toISOString().slice(0, 10);
+    for (const t of times) {
+      const ms = jstSlotToUtcMillis(`${dayStr} ${t}`);
+      if (ms > nowUtc.getTime()) candidates.push(ms);
+    }
+  }
+  return candidates.length ? Math.min(...candidates) : null;
+}

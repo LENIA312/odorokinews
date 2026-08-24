@@ -225,13 +225,76 @@ export function updatePerson(env: Env, id: number, fields: PersonUpdateFields): 
     .run();
 }
 
-export function updateOrganizationAdmin(
-  env: Env,
-  id: number,
-  fields: { status: string; description: string | null }
-): Promise<D1Result> {
-  return env.DB.prepare("UPDATE organizations SET status = ?, description = ?, updated_at = ? WHERE id = ?")
-    .bind(fields.status, fields.description, new Date().toISOString(), id)
+export interface OrganizationUpdateFields {
+  name: string;
+  kind: string;
+  status: string;
+  description: string | null;
+  industry: string | null;
+  employee_scale: string | null;
+  founded_year: number | null;
+}
+
+export function updateOrganizationAdmin(env: Env, id: number, fields: OrganizationUpdateFields): Promise<D1Result> {
+  return env.DB.prepare(
+    `UPDATE organizations
+     SET name = ?, kind = ?, status = ?, description = ?, industry = ?, employee_scale = ?, founded_year = ?, updated_at = ?
+     WHERE id = ?`
+  )
+    .bind(
+      fields.name,
+      fields.kind,
+      fields.status,
+      fields.description,
+      fields.industry,
+      fields.employee_scale,
+      fields.founded_year,
+      new Date().toISOString(),
+      id
+    )
+    .run();
+}
+
+export interface OrganizationCreateFields {
+  name: string;
+  kind: string;
+  city_id: number;
+  description: string | null;
+  industry: string | null;
+  employee_scale: string | null;
+  founded_year: number | null;
+  map_x: number;
+  map_y: number;
+}
+
+export async function createOrganization(env: Env, fields: OrganizationCreateFields): Promise<number> {
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(
+    `INSERT INTO organizations
+       (name, kind, city_id, description, status, industry, employee_scale, founded_year, map_x, map_y, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      fields.name,
+      fields.kind,
+      fields.city_id,
+      fields.description,
+      fields.industry,
+      fields.employee_scale,
+      fields.founded_year,
+      fields.map_x,
+      fields.map_y,
+      now,
+      now
+    )
+    .run();
+  return result.meta.last_row_id as number;
+}
+
+// 企業が倒産した際、そこに勤めていた人物を無所属に戻す。
+export function clearPeopleOrganization(env: Env, organizationId: number): Promise<D1Result> {
+  return env.DB.prepare("UPDATE people SET organization_id = NULL, updated_at = ? WHERE organization_id = ?")
+    .bind(new Date().toISOString(), organizationId)
     .run();
 }
 

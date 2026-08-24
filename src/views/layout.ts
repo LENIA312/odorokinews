@@ -96,6 +96,13 @@ const STYLE = `
     letter-spacing: 0.02em;
     margin-top: 0.1rem;
   }
+  .mosen-clock .clock-time {
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.05em;
+    margin-top: 0.15rem;
+  }
 
   h2.section-title {
     font-size: 1.1rem;
@@ -263,24 +270,49 @@ const STYLE = `
   }
 `;
 
-// ヘッダーの時計は表示のたびに/api/healthへ軽くポーリングし、日付が進んでいれば
-// 自動的に表示を更新する（ページ再読み込み不要）。
+// ヘッダーの時計。日付は/api/clockから取得し、秒単位の時刻は
+// 「直近の配信時刻」から「次の配信予定時刻」までの実際の進み具合を
+// 1日(24時間)に投影して、1秒ごとにローカルで刻む(架空の早回しではなく、
+// 実際に次のニュースまでどれだけ進んだかを表す)。
 const CLOCK_SCRIPT = [
   "(function () {",
-  "  var el = document.getElementById('mosenClockDate');",
-  "  if (!el) return;",
+  "  var dateEl = document.getElementById('mosenClockDate');",
+  "  var timeEl = document.getElementById('mosenClockTime');",
+  "  if (!dateEl) return;",
   "  var WEEKDAY = ['日','月','火','水','木','金','土'];",
-  "  function format(dateStr) {",
+  "  function formatDate(dateStr) {",
   "    var parts = dateStr.split('-').map(Number);",
   "    var wd = WEEKDAY[new Date(Date.UTC(parts[0], parts[1] - 1, parts[2])).getUTCDay()];",
   "    return parts[0] + '年' + parts[1] + '月' + parts[2] + '日（' + wd + '）';",
   "  }",
+  "  function pad(n) { return (n < 10 ? '0' : '') + n; }",
+  "",
+  "  var lastMs = null, nextMs = null;",
+  "",
+  "  function tick() {",
+  "    if (!timeEl || lastMs == null || nextMs == null || nextMs <= lastMs) return;",
+  "    var now = Date.now();",
+  "    var frac = (now - lastMs) / (nextMs - lastMs);",
+  "    frac = Math.max(0, Math.min(0.999988, frac));",
+  "    var totalSec = Math.floor(frac * 86400);",
+  "    var h = Math.floor(totalSec / 3600);",
+  "    var m = Math.floor((totalSec % 3600) / 60);",
+  "    var s = totalSec % 60;",
+  "    timeEl.textContent = pad(h) + ':' + pad(m) + ':' + pad(s);",
+  "  }",
+  "",
   "  function poll() {",
-  "    fetch('/api/health').then(function (res) { return res.json(); }).then(function (data) {",
-  "      if (data && data.worldDate) el.textContent = format(data.worldDate);",
+  "    fetch('/api/clock').then(function (res) { return res.json(); }).then(function (data) {",
+  "      if (!data || !data.worldDate) return;",
+  "      dateEl.textContent = formatDate(data.worldDate);",
+  "      lastMs = data.lastPublishedAt ? new Date(data.lastPublishedAt).getTime() : null;",
+  "      nextMs = data.nextPublishAt ? new Date(data.nextPublishAt).getTime() : null;",
   "    }).catch(function () {});",
   "  }",
-  "  setInterval(poll, 180000);",
+  "",
+  "  poll();",
+  "  setInterval(poll, 120000);",
+  "  setInterval(tick, 1000);",
   "})();",
 ].join("\n");
 
@@ -294,6 +326,7 @@ export function page(opts: { title: string; activePath: string; worldDate?: stri
     ? html`<div class="mosen-clock">
         <div class="clock-label">MOSE'N UNGRA</div>
         <div class="clock-date" id="mosenClockDate">${formatWorldDateWithWeekdayJa(opts.worldDate)}</div>
+        <div class="clock-time" id="mosenClockTime">--:--:--</div>
       </div>`
     : raw("");
 

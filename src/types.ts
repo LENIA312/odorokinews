@@ -20,6 +20,7 @@ export interface WorldRow {
   current_date: string;
   auto_publish_times: string;
   last_auto_publish_slot: string | null;
+  last_published_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -42,6 +43,11 @@ export interface OrganizationRow {
   city_id: number | null;
   description: string | null;
   status: string;
+  industry: string | null;
+  employee_scale: string | null;
+  founded_year: number | null;
+  map_x: number | null;
+  map_y: number | null;
   created_at: string;
   updated_at: string;
 }
