@@ -23,7 +23,11 @@ const EVENT_SYSTEM_PROMPT = `あなたは架空世界シミュレーションの
 - どうしても新しい人物が必要な場合のみ related_people に {"new": {...}} を1〜2件まで追加してよい。
 - 都市名・人口・国名などの固定設定を変更する内容にしないこと。
 - 過度に暴力的・グロテスクな内容は避け、報道可能な範囲の出来事にすること。
-- 直近のイベントと似た内容の繰り返しは避けること。`;
+- 直近のイベントと似た内容の繰り返しは避けること。
+- 出来事によって関係する人物の状態（負傷・入院・死亡・称賛される等）、企業の状態
+  （調査中・拡大中・回復中等）、あるいは株価に明確に影響が出るなら、
+  それを state_changes として必ず反映すること。「反映しなくていい理由がない限り」
+  空配列にはしないこと。世界の状態とニュースの内容が食い違うことは許されない。`;
 
 export function buildEventPrompt(ctx: WorldContext): { system: string; user: string } {
   const orgList = ctx.organizations
@@ -66,7 +70,10 @@ ${recent}
     {"type": "economic_stock_price", "target_id": 数値, "value": 数値}
   ]
 }
-state_changes は明確に必要な場合のみ含め、不要なら空配列にしてください。
+state_changes は「イベントの結果として世界の状態が変わるなら必ず含める」ものです。
+例えば事故で人が負傷したなら person_status、企業が不祥事を起こしたり業績を
+伸ばしたりしたなら organization_status や economic_stock_price を含めてください。
+本当に何も状態が変わらない出来事（雑談レベルの小ネタ等）の場合のみ空配列にしてください。
 JSONのみを出力してください。`;
 
   return { system: EVENT_SYSTEM_PROMPT, user };

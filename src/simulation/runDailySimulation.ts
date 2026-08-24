@@ -181,6 +181,28 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       }
     }
 
+    // AIが株価変動を提案しなかった場合でも、記事に登場した上場企業には
+    // 小さな自動変動を与え、「ニュースがあったのに経済がまったく動かない」
+    // というズレが起きないようにする。
+    const coveredOrgIds = new Set(
+      eventDraft.state_changes.filter((c) => c.type === "economic_stock_price").map((c) => c.target_id)
+    );
+    for (const orgId of eventDraft.related_organization_ids) {
+      if (coveredOrgIds.has(orgId)) continue;
+      const org = organizations.find((o) => o.id === orgId);
+      if (!org || org.kind !== "company") continue;
+      const prev = await previousEconomicValue(env, orgId, "stock_price", targetDate);
+      if (!prev) continue; // 未上場（株価データがまだない）企業は対象外
+      const delta = 1 + (Math.random() * 0.1 - 0.05); // -5%〜+5%の範囲で小さく変動
+      const value = Math.round(prev.value * delta * 100) / 100;
+      await env.DB.prepare(
+        "INSERT INTO economic_data (world_date, organization_id, metric, value, created_at) VALUES (?, ?, 'stock_price', ?, ?)"
+      )
+        .bind(targetDate, orgId, value, now())
+        .run();
+      appliedImpact.push({ type: "economic_stock_price", target_id: orgId, value, source: "auto" });
+    }
+
     const eventInsert = await env.DB.prepare(
       `INSERT INTO events
         (world_date, event_type, location_city_id, summary, detail, related_people, related_organizations, world_state_impact, is_newsworthy, source, created_at)

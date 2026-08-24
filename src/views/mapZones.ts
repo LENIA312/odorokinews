@@ -32,7 +32,7 @@ export const ZONES: Zone[] = [
 
 // 現状のseed.sqlで作成される組織ID(1〜6)に対応するゾーン。
 // 組織の並びが変わった場合はここも合わせて更新する。
-const ORG_ZONE_BY_ID: Record<number, string> = {
+export const ORG_ZONE_BY_ID: Record<number, string> = {
   1: "city_hall",
   2: "soukai_hq",
   3: "moonlight_plant",
@@ -52,6 +52,7 @@ export interface PersonZoneAssignment {
   id: number;
   name: string;
   occupation: string | null;
+  status: string;
   homeZone: string;
   workZone: string;
 }
@@ -79,6 +80,7 @@ export function assignPersonZones(people: PersonRow[]): PersonZoneAssignment[] {
       id: p.id,
       name: p.name,
       occupation: p.occupation,
+      status: p.status,
       homeZone,
       workZone,
     };

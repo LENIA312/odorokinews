@@ -1,6 +1,14 @@
 import { html, raw, RawHtml } from "../utils/html";
 import type { EconomicDataRow, OrganizationRow } from "../types";
 
+const ORG_STATUS_LABEL: Record<string, string> = {
+  active: "通常",
+  expanding: "拡大中",
+  under_investigation: "調査中",
+  recovering: "回復中",
+  celebrating: "好調",
+};
+
 export function economyView(
   organizations: OrganizationRow[],
   latestByOrg: Map<number, EconomicDataRow>,
@@ -14,7 +22,7 @@ export function economyView(
       const priceText = data ? `${data.value.toLocaleString("ja-JP")} 円` : "未上場";
       return html`<tr>
         <td>${o.name}</td>
-        <td>${o.status === "active" ? "通常" : o.status}</td>
+        <td>${ORG_STATUS_LABEL[o.status] ?? o.status}</td>
         <td>${priceText}</td>
       </tr>`.value;
     })

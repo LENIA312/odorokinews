@@ -101,7 +101,9 @@ function zoneMarkers(): string {
 
   var zones = ZONES.map(function (z) {
     return (
-      '<g transform="translate(' + z.x + "," + z.y + ')">' +
+      '<g id="zone-' + z.id + '" transform="translate(' + z.x + "," + z.y + ')">' +
+      '<circle class="status-ring" r="24" fill="none" stroke-width="3" opacity="0"></circle>' +
+      '<circle class="spotlight-ring" r="30" fill="none" stroke-width="2.5" opacity="0"></circle>' +
       zoneIcon(z) +
       '<text x="0" y="30" text-anchor="middle" font-size="10.5" fill="#4a473c" font-family="Hiragino Sans, Noto Sans JP, sans-serif">' +
       escapeXml(z.label) +
@@ -115,12 +117,17 @@ function zoneMarkers(): string {
 const STYLE_EXTRA = [
   "#cityMap { width:100%; height:auto; border:1px solid var(--line); border-radius:8px; }",
   "#mapBg { fill: #f4efe2; }",
-  "#clock { font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.85rem; color:var(--ink-soft); margin:0.4rem 0 0.8rem; }",
+  "#clock { font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.85rem; color:var(--ink-soft); margin:0.4rem 0 0.4rem; }",
+  "#spotlight { font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.85rem; background:var(--paper); border:1px solid var(--line); border-radius:6px; padding:0.5rem 0.8rem; margin-bottom:0.8rem; display:none; }",
+  "#spotlight a { font-weight:600; }",
   ".legend { display:flex; gap:1rem; flex-wrap:wrap; font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.78rem; color:var(--ink-soft); margin-top:0.6rem; }",
   ".legend .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:0.3rem; vertical-align:middle; }",
   "#personTip { font-family:'Hiragino Sans','Noto Sans JP',sans-serif; font-size:0.82rem; color:var(--ink-soft); min-height:1.4em; margin-top:0.5rem; }",
   ".person-dot { transition: r 0.15s; }",
   ".person-dot:hover { r: 5.5; }",
+  "@keyframes spotlightPulse { 0% { r: 24; opacity: 0.55; } 100% { r: 40; opacity: 0; } }",
+  ".spotlight-ring.active { animation: spotlightPulse 1.6s ease-out infinite; stroke: #9c2b2b; }",
+  ".status-ring.active { opacity: 0.9; }",
 ].join("\n");
 
 export function mapView(): RawHtml {
@@ -135,6 +142,7 @@ export function mapView(): RawHtml {
     </div>
     <style>${raw(STYLE_EXTRA)}</style>
     <div id="clock">読み込み中...</div>
+    <div id="spotlight"></div>
     <svg id="cityMap" viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg">
       <rect id="mapBg" x="0" y="0" width="800" height="480"></rect>
       ${raw(zoneMarkers())}
@@ -144,9 +152,12 @@ export function mapView(): RawHtml {
       <span><span class="dot" style="background:${ZONE_COLOR.org}"></span>職場・施設</span>
       <span><span class="dot" style="background:${ZONE_COLOR.residential}"></span>住宅街</span>
       <span><span class="dot" style="background:${ZONE_COLOR.other}"></span>その他（大学・公園・商店街）</span>
-      <span><span class="dot" style="background:#9c2b2b"></span>人物</span>
+      <span><span class="dot" style="background:#9c2b2b"></span>通常</span>
+      <span><span class="dot" style="background:#e07b39"></span>負傷</span>
+      <span><span class="dot" style="background:#a34bb0"></span>入院中</span>
+      <span><span class="dot" style="background:#8a8a8a"></span>故人</span>
     </div>
-    <div id="personTip">人物の点をクリックすると名前が表示されます。</div>
+    <div id="personTip">人物の点をクリックすると名前が表示されます。施設が赤い枠で囲まれている場合は調査中、金色は好調・拡大中を表します。</div>
     <script>
       window.__ZONES__ = ${raw(zonesJson)};
       window.__HUB__ = ${raw(hubJson)};
@@ -165,7 +176,23 @@ const CLIENT_SCRIPT = [
   "  var peopleLayer = document.getElementById('peopleLayer');",
   "  var SVG_NS = 'http://www.w3.org/2000/svg';",
   "  var people = [];",
+  "  var zoneStatus = {};",
+  "  var spotlight = null;",
   "  var dotEls = {};",
+  "",
+  "  var PERSON_STATUS_COLOR = {",
+  "    injured: '#e07b39',",
+  "    hospitalized: '#a34bb0',",
+  "    deceased: '#8a8a8a',",
+  "    celebrating: '#d4a017',",
+  "    under_investigation: '#5b7fd9',",
+  "  };",
+  "  var ORG_STATUS_RING_COLOR = {",
+  "    under_investigation: '#c0392b',",
+  "    expanding: '#d4a017',",
+  "    celebrating: '#d4a017',",
+  "    recovering: '#5b7fd9',",
+  "  };",
   "",
   "  function lerp(a, b, t) { return a + (b - a) * t; }",
   "  function easeInOut(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }",
@@ -191,7 +218,17 @@ const CLIENT_SCRIPT = [
   "  }",
   "",
   "  // 0-24のシミュレーション上の時刻から、人物ごとの現在位置を計算する。",
+  "  // 入院中/故人はニュースの状態を優先し、通常の通勤ロジックより先に位置を固定する。",
   "  function computePosition(person, hour, realSeconds) {",
+  "    if (person.status === 'hospitalized') {",
+  "      var hospital = zoneById.hospital;",
+  "      if (hospital) return wander(hospital.x, hospital.y, person.id, realSeconds);",
+  "    }",
+  "    if (person.status === 'deceased') {",
+  "      var restingZone = zoneById[person.homeZone];",
+  "      if (restingZone) return { x: restingZone.x, y: restingZone.y };",
+  "    }",
+  "",
   "    var home = zoneById[person.homeZone];",
   "    var work = zoneById[person.workZone];",
   "    if (!home || !work) return { x: 400, y: 240 };",
@@ -219,29 +256,67 @@ const CLIENT_SCRIPT = [
   "    if (dotEls[person.id]) return dotEls[person.id];",
   "    var c = document.createElementNS(SVG_NS, 'circle');",
   "    c.setAttribute('class', 'person-dot');",
-  "    c.setAttribute('r', '3.6');",
-  "    c.setAttribute('fill', '#9c2b2b');",
   "    c.setAttribute('stroke', '#fff3e6');",
   "    c.setAttribute('stroke-width', '0.8');",
-  "    c.setAttribute('opacity', '0.9');",
   "    c.style.cursor = 'pointer';",
   "    c.addEventListener('click', function () {",
   "      var tip = document.getElementById('personTip');",
   "      tip.innerHTML = '<a href=\"/people/' + person.id + '\" target=\"_blank\">' +",
-  "        escapeHtml(person.name) + '</a>（' + escapeHtml(person.occupation || '不明') + '）';",
+  "        escapeHtml(person.name) + '</a>（' + escapeHtml(person.occupation || '不明') +",
+  "        (person.status && person.status !== 'alive' ? ' / ' + escapeHtml(person.status) : '') + '）';",
   "    });",
   "    peopleLayer.appendChild(c);",
   "    dotEls[person.id] = c;",
   "    return c;",
   "  }",
   "",
+  "  function styleDot(dot, person) {",
+  "    var isResting = person.status === 'deceased';",
+  "    dot.setAttribute('r', isResting ? '2.6' : '3.6');",
+  "    dot.setAttribute('fill', PERSON_STATUS_COLOR[person.status] || '#9c2b2b');",
+  "    dot.setAttribute('opacity', isResting ? '0.55' : '0.9');",
+  "  }",
+  "",
   "  function escapeHtml(s) {",
   "    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');",
   "  }",
   "",
-  "  function loadPeople() {",
+  "  function updateZoneOverlays() {",
+  "    ZONES.forEach(function (z) {",
+  "      var g = document.getElementById('zone-' + z.id);",
+  "      if (!g) return;",
+  "      var statusRing = g.querySelector('.status-ring');",
+  "      var spotRing = g.querySelector('.spotlight-ring');",
+  "      var status = zoneStatus[z.id];",
+  "      if (status && statusRing) {",
+  "        statusRing.setAttribute('stroke', ORG_STATUS_RING_COLOR[status] || '#5b7fd9');",
+  "        statusRing.classList.add('active');",
+  "      } else if (statusRing) {",
+  "        statusRing.classList.remove('active');",
+  "      }",
+  "      var isSpotlighted = !!spotlight && spotlight.zoneIds.indexOf(z.id) !== -1;",
+  "      if (spotRing) {",
+  "        if (isSpotlighted) spotRing.classList.add('active');",
+  "        else spotRing.classList.remove('active');",
+  "      }",
+  "    });",
+  "",
+  "    var banner = document.getElementById('spotlight');",
+  "    if (spotlight && spotlight.headline) {",
+  "      banner.style.display = 'block';",
+  "      banner.innerHTML = '本日の注目: <a href=\"/news/' + spotlight.newsId + '\" target=\"_blank\">' +",
+  "        escapeHtml(spotlight.headline) + '</a>';",
+  "    } else {",
+  "      banner.style.display = 'none';",
+  "    }",
+  "  }",
+  "",
+  "  function loadMapData() {",
   "    return fetch('/api/map/people').then(function (res) { return res.json(); }).then(function (data) {",
   "      people = data.people || [];",
+  "      zoneStatus = data.zoneStatus || {};",
+  "      spotlight = data.spotlight || null;",
+  "      updateZoneOverlays();",
   "    });",
   "  }",
   "",
@@ -263,13 +338,14 @@ const CLIENT_SCRIPT = [
   "      var dot = ensureDot(p);",
   "      dot.setAttribute('cx', pos.x);",
   "      dot.setAttribute('cy', pos.y);",
+  "      styleDot(dot, p);",
   "    }",
   "    requestAnimationFrame(tick);",
   "  }",
   "",
-  "  loadPeople().then(function () {",
+  "  loadMapData().then(function () {",
   "    requestAnimationFrame(tick);",
   "  });",
-  "  setInterval(loadPeople, 60000); // 新しく生まれた人物なども反映",
+  "  setInterval(loadMapData, 60000); // 新しい人物・状態変化・注目ニュースを反映",
   "})();",
 ].join("\n");

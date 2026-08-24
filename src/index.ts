@@ -33,7 +33,7 @@ import { economyView } from "./views/economy";
 import { notFoundView } from "./views/notFound";
 import { adminDashboardPage } from "./views/admin";
 import { mapView } from "./views/map";
-import { assignPersonZones } from "./views/mapZones";
+import { assignPersonZones, ORG_ZONE_BY_ID } from "./views/mapZones";
 import { runDailySimulation } from "./simulation/runDailySimulation";
 import type { EconomicDataRow, OrganizationRow, PersonRow, RelationshipRow } from "./types";
 
@@ -213,8 +213,36 @@ app.get("/map", async (c) => {
 });
 
 app.get("/api/map/people", async (c) => {
-  const people = await listPeople(c.env, 300);
-  return c.json({ people: assignPersonZones(people.results ?? []) });
+  const [people, orgs, latestNews] = await Promise.all([
+    listPeople(c.env, 300),
+    listOrganizations(c.env),
+    listNews(c.env, 1),
+  ]);
+
+  const zoneStatus: Record<string, string> = {};
+  for (const org of orgs.results ?? []) {
+    const zoneId = ORG_ZONE_BY_ID[org.id];
+    if (zoneId && org.status !== "active") {
+      zoneStatus[zoneId] = org.status;
+    }
+  }
+
+  const latest = (latestNews.results ?? [])[0] ?? null;
+  const spotlight = latest
+    ? {
+        newsId: latest.id,
+        headline: latest.title,
+        zoneIds: parseIdArray(latest.related_organizations)
+          .map((id) => ORG_ZONE_BY_ID[id])
+          .filter((z): z is string => Boolean(z)),
+      }
+    : null;
+
+  return c.json({
+    people: assignPersonZones(people.results ?? []),
+    zoneStatus,
+    spotlight,
+  });
 });
 
 app.get("/api/health", async (c) => {
