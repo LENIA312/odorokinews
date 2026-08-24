@@ -11,14 +11,20 @@ export interface AiCallResult {
  * Workers AIのチャットモデルを呼び出し、レスポンス本文の文字列を取り出す。
  * モデル名はコードにハードコードせず env から渡す（docs.md 3章）。
  */
-async function callChatModel(env: Env, model: string, systemPrompt: string, userPrompt: string): Promise<string> {
+async function callChatModel(
+  env: Env,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  maxTokens: number
+): Promise<string> {
   const ai = env.AI as unknown as { run: (model: string, input: unknown) => Promise<unknown> };
   const result = await ai.run(model, {
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ],
-    max_tokens: 900,
+    max_tokens: maxTokens,
   });
 
   const anyResult = result as any;
@@ -46,10 +52,11 @@ export async function callAiForJson(
   env: Env,
   model: string,
   systemPrompt: string,
-  userPrompt: string
+  userPrompt: string,
+  maxTokens = 900
 ): Promise<AiCallResult> {
   try {
-    const raw = await callChatModel(env, model, systemPrompt, userPrompt);
+    const raw = await callChatModel(env, model, systemPrompt, userPrompt, maxTokens);
     const json = extractJson(raw);
     return { ok: true, raw, json };
   } catch (err) {

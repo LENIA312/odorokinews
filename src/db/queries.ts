@@ -4,6 +4,7 @@ import type {
   Env,
   EventRow,
   NewsRow,
+  OccupationTypeRow,
   OrganizationRow,
   PersonRow,
   RelationshipRow,
@@ -284,12 +285,24 @@ export interface NewsUpdateFields {
   title: string;
   body: string;
   category: string;
+  reporter_person_id: number | null;
 }
 
 export function updateNews(env: Env, id: number, fields: NewsUpdateFields): Promise<D1Result> {
-  return env.DB.prepare("UPDATE news SET title = ?, body = ?, category = ? WHERE id = ?")
-    .bind(fields.title, fields.body, fields.category, id)
+  return env.DB.prepare("UPDATE news SET title = ?, body = ?, category = ?, reporter_person_id = ? WHERE id = ?")
+    .bind(fields.title, fields.body, fields.category, fields.reporter_person_id, id)
     .run();
+}
+
+// その都市に所属する記者(occupation='記者')をランダムに1人選ぶ。
+// 記事末尾の「記者: (名前)」表記に使う。該当者がいなければnull(表記なしで問題ない)。
+export async function getRandomReporterId(env: Env, cityId: number): Promise<number | null> {
+  const row = await env.DB.prepare(
+    "SELECT id FROM people WHERE occupation = '記者' AND city_id = ? ORDER BY RANDOM() LIMIT 1"
+  )
+    .bind(cityId)
+    .first<{ id: number }>();
+  return row?.id ?? null;
 }
 
 // ニュースを削除する。対応するevents/timelineも合わせて削除し、
@@ -488,11 +501,57 @@ export function insertPriceIndex(env: Env, worldDate: string, value: number): Pr
     .run();
 }
 
-export function searchPeopleAdmin(env: Env, query: string, limit = 50): Promise<D1Result<PersonRow>> {
-  const like = `%${query}%`;
+// 管理画面の人物一覧用。名前検索・職業・状態での絞り込みを組み合わせられる。
+// 従来は50件上限だったため全員が表示されない不具合があったので、既定値を大きくしてある。
+export function listPeopleAdmin(
+  env: Env,
+  opts: { q?: string; occupation?: string; status?: string; limit?: number }
+): Promise<D1Result<PersonRow>> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (opts.q) {
+    conditions.push("(name LIKE ? OR name_kana LIKE ?)");
+    params.push(`%${opts.q}%`, `%${opts.q}%`);
+  }
+  if (opts.occupation) {
+    conditions.push("occupation = ?");
+    params.push(opts.occupation);
+  }
+  if (opts.status) {
+    conditions.push("status = ?");
+    params.push(opts.status);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limit = opts.limit ?? 1000;
   return env.DB.prepare(
-    `SELECT * FROM people WHERE name LIKE ? OR name_kana LIKE ? ORDER BY (name_kana IS NULL) ASC, name_kana ASC LIMIT ?`
+    `SELECT * FROM people ${where} ORDER BY (name_kana IS NULL) ASC, name_kana ASC, name ASC LIMIT ?`
   )
-    .bind(like, like, limit)
+    .bind(...params, limit)
     .all<PersonRow>();
+}
+
+// ---- 職業タイプ（管理画面から追加/編集/削除できるマスターリスト） ----
+
+export function listOccupationTypes(env: Env): Promise<D1Result<OccupationTypeRow>> {
+  return env.DB.prepare("SELECT * FROM occupation_types ORDER BY name ASC").all<OccupationTypeRow>();
+}
+
+export async function createOccupationType(env: Env, name: string): Promise<number> {
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(
+    "INSERT INTO occupation_types (name, created_at, updated_at) VALUES (?, ?, ?)"
+  )
+    .bind(name, now, now)
+    .run();
+  return result.meta.last_row_id as number;
+}
+
+export function updateOccupationType(env: Env, id: number, name: string): Promise<D1Result> {
+  return env.DB.prepare("UPDATE occupation_types SET name = ?, updated_at = ? WHERE id = ?")
+    .bind(name, new Date().toISOString(), id)
+    .run();
+}
+
+export function deleteOccupationType(env: Env, id: number): Promise<D1Result> {
+  return env.DB.prepare("DELETE FROM occupation_types WHERE id = ?").bind(id).run();
 }

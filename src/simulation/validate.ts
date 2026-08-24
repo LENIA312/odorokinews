@@ -35,7 +35,7 @@ export interface ValidatedEventDraft {
 const MAX_TEXT = 600;
 const MAX_SUMMARY = 200;
 const MAX_TITLE = 120;
-const MAX_BODY = 4000;
+const MAX_BODY = 5000;
 const MAX_RELATED_PEOPLE = 6;
 const MAX_RELATED_ORGS = 4;
 const MAX_STATE_CHANGES = 6;

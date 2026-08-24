@@ -180,7 +180,7 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron
 | name_kana | TEXT? | 0002 | ふりがな（ひらがな）。50音ソート・検索・50音インデックスに使用 |
 | age / gender | | 0001 | |
 | city_id | INTEGER? FK→cities | 0001 | 所属都市。マップでの拠点判定に使う |
-| occupation | TEXT? | 0001 | |
+| occupation | TEXT? | 0001 | 自由入力のTEXT。管理画面のUIは`occupation_types`（後述）から選ぶ形式に制限しているが、DB上の制約(FK)ではない。AIが`new_people`で新規作成する人物の職業は従来通り自由入力のまま（`occupation_types`に無い値も付きうる） |
 | organization_id | INTEGER? FK→organizations | 0001 | |
 | money | INTEGER | 0001 | 所持金（現状ゲームプレイには未使用、表示のみ） |
 | status | TEXT | 0001 | `PERSON_STATUSES`: alive / sick / injured / hospitalized / deceased / celebrating / under_investigation |
@@ -235,8 +235,19 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 | related_people / related_organizations | TEXT | JSON配列（ID） |
 | related_city_id | INTEGER? FK→cities | |
 | event_id | INTEGER NOT NULL FK→events | 1記事=1イベント |
+| reporter_person_id | INTEGER? FK→people | 0008で追加。記事末尾の「記者: (名前)」表記に使う。日次シミュレーションでは`getRandomReporterId`でその都市の`occupation='記者'`の人物からランダムに1人自動選出（該当なしなら`null`のまま表記なし）。管理画面のAI補助/完全手動作成では明示的に指定でき、未指定なら同じロジックで自動割り当てされる |
 | generated_by | TEXT | AIモデル名 / `fallback_template` / `admin_ai_assisted` / `admin_manual` |
 | created_at | TEXT | |
+
+#### `occupation_types`（0008で新規追加）
+
+職業を管理画面から追加・改名・削除できるマスターリスト。`id`, `name`(UNIQUE), `created_at`,
+`updated_at`のみのシンプルなテーブル。**`people.occupation`とのFK制約は無い**
+（既存データを壊さないための設計判断。4.1節`people`の occupation の説明を参照）。
+管理画面の人物編集フォームはこのテーブルから選ばせるセレクトボックスになっており、
+人物の現在の職業がこのリストに無い値でも選択肢として保持したまま表示する
+（`occupationSelectOptions()`、`admin.ts`）。初期投入（0008マイグレーション内のINSERT）で
+既存seedデータ・`generate_people.mjs`の職業プールを網羅した約70件 + `記者`を用意している。
 
 #### `timeline`
 
@@ -274,6 +285,7 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 | `0005_city_management.sql` | `cities.status/map_x/map_y`。ダイナン市(id=1)を`active`かつ座標(650,430)に設定 |
 | `0006_weather.sql` | `world.weather`（デフォルト `'晴れ'`） |
 | `0007_person_life_details.sql` | `people.annual_income/job_title/birth_date/birthplace` |
+| `0008_occupations_and_reporters.sql` | `occupation_types`テーブル新規作成+初期データ約70件、記者2人をpeopleへ追加投入、`news.reporter_person_id` |
 
 新しいマイグレーションを追加したら、このテーブルと4.1節の該当テーブルの説明を両方更新すること。
 
@@ -424,16 +436,23 @@ AIが使えない/失敗した場合に必ず動く、テンプレートベー�
 ### 6.3 記者AIプロンプト（`buildNewsPrompt`, `prompts.ts`）
 
 イベントAIが確定した事実（種別・要約・詳細・魔法関連か・関係人物名・関係組織名）だけを渡し、
-「事実にない新しい固有名詞・数値・因果関係を勝手に作らない」「ギャグ要素も淡々と通常の出来事として
-報道する」ことを指示。出力は `title`/`body`/`category` のJSON。
+「事実にない新しい固有名詞・数値・因果関係を勝手に作らない」ことを厳守させつつ、
+**読んでくすっと笑ってしまうようなウィットに富んだ記事**を書くよう指示している
+（誇張した言い回し・比喩・関係者コメント風の一言は、新しい「事実」を捏造しない範囲でOK。
+ただし負傷・死亡など深刻な内容では被害者を茶化す不謹慎な表現は避けるよう明示）。
+本文は5〜7段落程度（従来の3〜5段落からやや長めに変更）。出力は `title`/`body`/`category` のJSON。
 
 管理画面のAI補助作成でジャンル指定がある場合、記者AIの出力カテゴリより**管理者の指定を優先**して
 上書きする（`newsDraft.category = genre`、AIの自律性より明示的な指定を信頼する設計）。
 
+記事の「記者」欄（`news.reporter_person_id`）はAIの出力スキームには含まれない。AIに書かせると
+実在しない記者名を捏造しかねないため、**コード側で機械的に**（都市に紐づく`occupation='記者'`の
+人物からランダム選出、または管理画面での明示指定）決定する。詳細は4.1節`news`テーブルの説明を参照。
+
 ### 6.4 バリデーション/サニタイズ（`validate.ts`）
 
 AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateStateChanges` で必ず検証する。
-文字数上限（要約200字・詳細600字・タイトル120字・本文4000字等）、許可された固定値以外の除去、
+文字数上限（要約200字・詳細600字・タイトル120字・本文5000字等）、許可された固定値以外の除去、
 存在しないID参照の除去などをすべてここで行う。パース失敗やスキーマ不一致の場合は `null` を返し、
 呼び出し側がフォールバックへ切り替える。
 
@@ -443,6 +462,9 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
   （`wrangler.jsonc`の`vars`で管理、コードへのハードコード禁止方針）
 - `AI_MAX_CALLS_PER_RUN`: 1回のシミュレーションで許容するAI呼び出し回数（現在4）。管理画面のAI補助
   ニュース作成はこの上限とは別枠（呼ばれる頻度が低いため）
+- `max_tokens`（`callAiForJson`/`callChatModel`, `ai.ts`）: 呼び出しごとに指定可能（既定900）。
+  記事が長くなった対応として、記者AI呼び出し（日次シミュレーション・管理画面AI補助作成の両方）は
+  `1600`を明示的に渡している。イベントAI呼び出しは既定の900のまま。
 - Workers AIは**ローカル開発では実行できない**（`wrangler dev`のみでは`Binding AI needs to be run
   remotely`エラーになる）。動作確認は本番 or `wrangler dev --remote` で行う。
 
@@ -496,10 +518,19 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 （`status-ring`）が表示される。直近ニュースに関係した組織には「注目」の光るリング
 （`spotlight-ring`）も表示される。
 
-### 7.4 人物検索・フォーカス
+### 7.4 人物検索・フォーカス・選択中インジケーター
 
 マップ画面上部の検索ボックスから人物名（漢字/かな）で絞り込み、候補をタップするとその人物の
-現在位置へパン&ズームし、フォーカスリングを点滅表示する（`focusOnPerson`、`panZoom.focusOn`）。
+現在位置へパン&ズームし、一瞬だけ光る「フォーカスリング」を表示する（`focusOnPerson`、
+`panZoom.focusOn`、`showFocusRing`。3秒で消える一過性の演出）。
+
+これとは別に、**選択中の人物を継続的に示す「選択リング」**（`#selectionRing`）を用意している。
+点をクリックする、または検索から選んだ場合、`selectedPersonId`にその人物のIDを保持し、
+以後は`tick()`（毎フレームの位置更新ループ）内で呼ばれる`updateSelectionRing()`が、その人物の
+現在位置（移動中でも追従する）に常時パルスアニメーション付きの円を表示し続ける。選択中の点自体も
+`styleDot()`で半径7px・青いストローク太めに変えて視覚的に強調し、他の点に埋もれないよう
+`peopleLayer`内で最前面へ再配置する。選択は新しい人物をクリック/検索するまで保持される
+（明示的な解除UIは無い）。
 
 ---
 
@@ -515,8 +546,8 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 | タブ | 主な機能 |
 |---|---|
 | 概要 | 手動シミュレーション実行ボタン、実行履歴、最新ニュース一覧 |
-| ニュース | 記事の一覧・編集（タイトル/本文/カテゴリ）・**削除**・**新規作成**（AI補助 / 完全手動の2方式） |
-| 人物 | 50音順一覧・検索・編集（役職/年収/生年月日/生まれを含む全項目）・**新規作成**・**人間関係の追加/解除**・**出産の記録** |
+| ニュース | 記事の一覧・編集（タイトル/本文/カテゴリ/**担当記者**）・**削除**・**新規作成**（AI補助 / 完全手動の2方式、担当記者の指定可） |
+| 人物 | 職業タイプ管理、50音順一覧・**名前/職業/状態での絞込検索**・編集（役職/年収/生年月日/生まれ/**職業を選択式に変更**を含む全項目）・**新規作成**・**人間関係の追加/解除**・**出産の記録** |
 | 経済 | 物価指数の更新、企業一覧・編集・**新規作成**（所在都市を選択可）、株価の個別更新 |
 | 都市 | 都市の一覧・**新規作成**・編集（Active/Draftの切り替えを含む） |
 | 設定 | 自動配信時刻の追加/削除/保存、**天候の変更** |
@@ -534,6 +565,7 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 
 どちらの方式でも、`world.current_date`は進めない（=世界暦を跨がない補足記事という扱い）。
 `events.source`/`news.generated_by` はそれぞれ `admin_ai_assisted` / `admin_manual` として記録される。
+どちらの方式でも `reporterId` を任意で指定できる（未指定なら6.3節の通り自動割り当て）。
 
 ### 8.2 ニュース削除
 
@@ -547,7 +579,7 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 - 都市作成: デフォルトは`draft`。地図上の座標も7.2節のロジックで自動決定。`id=1`を`draft`には
   戻せない（サーバー側でガード）。
 - 人物作成: 所在都市を選択可能。`origin='admin_manual'`として記録。役職・年収・生年月日・生まれも
-  作成時から指定可能（4.1節参照）。
+  作成時から指定可能（4.1節参照）。職業は8.5節の職業タイプから選択する（未登録の値も保持される）。
 
 ### 8.4 人間関係の追加/解除・出産の記録
 
@@ -565,6 +597,25 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
   作成され、母親（および指定があれば父親）との`family_parent`/`family_child`ペアが自動作成される。
   さらに母親の既存の子（今回生まれた子以外）がいれば、その子たちとの`family_sibling`ペアも
   自動的に張られる。
+
+### 8.5 職業タイプ管理・人物一覧の絞込
+
+人物タブ上部に「職業タイプ管理」パネル（初期状態は折りたたみ、表示/非表示ボタンで開閉）があり、
+`occupation_types`テーブルへの追加・改名（`prompt()`ダイアログ）・削除（`confirm()`確認）ができる
+（`GET/POST/PUT/DELETE /api/admin/occupation-types`）。追加・改名時、同名が既に存在すると
+サーバー側のUNIQUE制約違反を捕捉して「この職業名はすでに登録されています」を返す。
+
+人物一覧は、従来「直近更新50件」に固定されていて**全員が表示されない不具合があった**
+（`listPeopleAdmin`のデフォルト`limit`を1000へ引き上げて解消）。名前検索に加えて職業・状態の
+セレクトボックスで絞り込め、`GET /api/admin/people-list`に`q`/`occupation`/`status`を
+組み合わせて渡せる（`listPeopleAdmin`、いずれも省略可）。
+
+### 8.6 担当記者の指定（ニュース編集・作成共通）
+
+ニュースの編集フォーム・作成フォーム（AI補助/完全手動どちらも）に「担当記者」の検索欄がある。
+`GET /api/admin/people-list?occupation=記者` （職業タイプ管理で言う「記者」に限定した絞込）を
+使って候補を出し、選択すると`reporterId`としてリクエストに含まれる。検索欄を空のままフォーカスすると
+記者一覧がそのまま表示される。「解除」ボタンで指定なし（自動割り当てに戻す/外す）に戻せる。
 
 ---
 
@@ -608,12 +659,14 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 | GET/PUT/DELETE | `/api/admin/news/:id` | 記事の取得/編集/**削除** |
 | POST | `/api/admin/news/generate` | AI補助でのニュース新規作成 |
 | POST | `/api/admin/news/manual` | 完全手動でのニュース新規作成 |
-| GET | `/api/admin/people-list` | 人物一覧（`?q=`で検索） |
+| GET | `/api/admin/people-list` | 人物一覧（`?q=`名前検索・`?occupation=`・`?status=`絞込を組み合わせ可、既定1000件） |
 | GET/PUT | `/api/admin/people/:id` | 人物の取得/編集 |
 | POST | `/api/admin/people` | 人物の**新規作成** |
 | GET | `/api/admin/people/:id/relationships` | その人物の人間関係一覧 |
 | POST/DELETE | `/api/admin/relationships` | 人間関係の**追加/解除**（両方向ペア） |
 | POST | `/api/admin/people/childbirth` | **出産の記録**（新規人物作成+親子/兄弟姉妹関係の自動作成） |
+| GET/POST | `/api/admin/occupation-types` | 職業タイプの一覧取得/新規作成 |
+| PUT/DELETE | `/api/admin/occupation-types/:id` | 職業タイプの改名/削除 |
 | GET | `/api/admin/economy-list` | 経済タブ用の企業一覧+株価+物価指数 |
 | POST/PUT | `/api/admin/organizations` `/organizations/:id` | 企業の新規作成/編集 |
 | POST | `/api/admin/economy/stock` | 株価の個別更新 |
@@ -738,3 +791,9 @@ npm run tail
   人間関係を両方向ペアで管理する`RELATION_TYPES`を整備し、管理画面から人間関係の追加/解除・
   「出産の記録」（新規人物作成+親子/兄弟姉妹関係の自動作成）が可能に。人物詳細ページに家系図
   セクションを追加し、居住地表示のハードコードバグ（常に「ダイナン」表示）も修正。
+- 2026-08-25: 記者AIの文体をユーモラス・やや長め（5〜7段落）に変更し、記事末尾に
+  「記者: (名前)」の担当記者表記を追加（`news.reporter_person_id`、occupation='記者'の人物から
+  自動選出 or 管理画面で明示指定）。職業を`occupation_types`マスターテーブルで管理画面から
+  追加/改名/削除できるようにし、人物編集フォームの職業欄をセレクトボックスに変更。管理画面の
+  人物一覧が50件上限で全員表示されなかった不具合を修正（既定1000件）し、名前/職業/状態での
+  絞込検索を追加。マップの選択中/検索した人物に、移動にも追従する常時表示の選択リングを追加。

@@ -15,7 +15,8 @@ export function newsDetailView(
   news: NewsRow,
   cityName: string | null,
   relatedPeople: PersonRow[],
-  relatedOrgs: OrganizationRow[]
+  relatedOrgs: OrganizationRow[],
+  reporter: PersonRow | null
 ): RawHtml {
   const peopleChips = relatedPeople.length
     ? html`<div class="chip-row">
@@ -34,6 +35,9 @@ export function newsDetailView(
     </div>
     <h2>${news.title}</h2>
     <div class="body">${bodyParagraphs(news.body)}</div>
+    ${reporter
+      ? html`<p class="byline">記者: <a href="/people/${reporter.id}">${reporter.name}</a></p>`
+      : raw("")}
 
     <div class="related-box">
       <h4>関係人物</h4>

@@ -185,6 +185,13 @@ const STYLE = `
   article.news-detail .body p {
     margin: 0 0 1rem;
   }
+  article.news-detail .byline {
+    text-align: right;
+    font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    margin: 0 0 1.2rem;
+  }
 
   .related-box {
     background: var(--paper);

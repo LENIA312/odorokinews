@@ -284,6 +284,8 @@ const STYLE_EXTRA = [
   "}",
   "#personSearchResults div:hover, #personSearchResults div.active { background:var(--bg); }",
   ".focus-ring { animation: spotlightPulse 1s ease-out 3; stroke: #5b8cff; }",
+  "@keyframes selectionPulse { 0%, 100% { r: 8; opacity: 0.95; } 50% { r: 13; opacity: 0.35; } }",
+  "#selectionRing { animation: selectionPulse 1.4s ease-in-out infinite; pointer-events: none; }",
 ].join("\n");
 
 export function mapView(zones: Zone[], edges: [string, string][]): RawHtml {
@@ -316,6 +318,7 @@ export function mapView(zones: Zone[], edges: [string, string][]): RawHtml {
       <rect id="mapBg" x="${Math.round(bounds.minX)}" y="${Math.round(bounds.minY)}" width="${Math.round(bounds.maxX - bounds.minX)}" height="${Math.round(bounds.maxY - bounds.minY)}"></rect>
       ${raw(svgBody)}
       <g id="peopleLayer"></g>
+      <circle id="selectionRing" r="9" fill="none" stroke="#5b8cff" stroke-width="2.2" style="display:none" class="selection-pulse"></circle>
     </svg>
     <div class="legend">
       <span><span class="dot" style="background:${ZONE_COLOR.org}"></span>職場・施設</span>
@@ -386,6 +389,7 @@ const CLIENT_SCRIPT = [
   "  var spotlight = null;",
   "  var dotEls = {};",
   "  var pathCache = {};",
+  "  var selectedPersonId = null;",
   "",
   "  var PERSON_STATUS_COLOR = {",
   "    sick: '#c9a227',",
@@ -504,6 +508,7 @@ const CLIENT_SCRIPT = [
   "    c.setAttribute('stroke-width', '0.8');",
   "    c.style.cursor = 'pointer';",
   "    c.addEventListener('click', function () {",
+  "      selectedPersonId = person.id;",
   "      var tip = document.getElementById('personTip');",
   "      tip.innerHTML = '<a href=\"/people/' + person.id + '\" target=\"_blank\">' +",
   "        escapeHtml(person.name) + '</a>（' + escapeHtml(person.occupation || '不明') +",
@@ -516,9 +521,13 @@ const CLIENT_SCRIPT = [
   "",
   "  function styleDot(dot, person) {",
   "    var isResting = person.status === 'deceased';",
-  "    dot.setAttribute('r', isResting ? '2.6' : '3.4');",
+  "    var isSelected = person.id === selectedPersonId;",
+  "    dot.setAttribute('r', isSelected ? '7' : (isResting ? '2.6' : '3.4'));",
   "    dot.setAttribute('fill', PERSON_STATUS_COLOR[person.status] || '#9c2b2b');",
   "    dot.setAttribute('opacity', isResting ? '0.55' : '0.9');",
+  "    dot.setAttribute('stroke', isSelected ? '#5b8cff' : '#fff3e6');",
+  "    dot.setAttribute('stroke-width', isSelected ? '2.5' : '0.8');",
+  "    if (isSelected) { peopleLayer.appendChild(dot); }",
   "  }",
   "",
   "  function escapeHtml(s) {",
@@ -583,7 +592,19 @@ const CLIENT_SCRIPT = [
   "      dot.setAttribute('cy', pos.y);",
   "      styleDot(dot, p);",
   "    }",
+  "    updateSelectionRing();",
   "    requestAnimationFrame(tick);",
+  "  }",
+  "",
+  "  // 選択中(クリック/検索)の人物がいれば、その点を追いかけるリングを表示し続ける。",
+  "  function updateSelectionRing() {",
+  "    var ring = document.getElementById('selectionRing');",
+  "    if (!ring) return;",
+  "    var dot = selectedPersonId != null ? dotEls[selectedPersonId] : null;",
+  "    if (!dot) { ring.style.display = 'none'; return; }",
+  "    ring.setAttribute('cx', dot.getAttribute('cx'));",
+  "    ring.setAttribute('cy', dot.getAttribute('cy'));",
+  "    ring.style.display = '';",
   "  }",
   "",
   "  // ホイール／ピンチでの拡大縮小とドラッグ／スワイプでの移動（viewBoxを直接操作する）。",
@@ -729,6 +750,7 @@ const CLIENT_SCRIPT = [
   "  }",
   "",
   "  function focusOnPerson(person) {",
+  "    selectedPersonId = person.id;",
   "    var pos = currentPersonPosition(person);",
   "    panZoom.focusOn(pos.x, pos.y, 420);",
   "    showFocusRing(pos.x, pos.y);",

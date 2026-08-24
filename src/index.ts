@@ -3,10 +3,12 @@ import type { Env } from "./types";
 import {
   clearPeopleOrganization,
   createCity,
+  createOccupationType,
   createOrganization,
   createPerson,
   createRelationshipPair,
   deleteNewsCascade,
+  deleteOccupationType,
   deleteRelationshipPair,
   getCity,
   getEvent,
@@ -15,6 +17,7 @@ import {
   getPerson,
   getPeopleByIds,
   getOrganizationsByIds,
+  getRandomReporterId,
   getWorld,
   insertPriceIndex,
   insertStockPrice,
@@ -24,9 +27,11 @@ import {
   listNews,
   listNewsByCategory,
   listNewsForPerson,
+  listOccupationTypes,
   listOrganizations,
   listOrganizationsByCity,
   listPeople,
+  listPeopleAdmin,
   listPeopleByCity,
   listPeopleByKana,
   listRecentEvents,
@@ -34,9 +39,9 @@ import {
   listRelationshipsForPerson,
   listTimeline,
   parseIdArray,
-  searchPeopleAdmin,
   updateCityAdmin,
   updateNews,
+  updateOccupationType,
   updateOrganizationAdmin,
   updatePerson,
   updateWorldAutoPublishTimes,
@@ -135,13 +140,14 @@ app.get("/news/:id", async (c) => {
   const city = news.related_city_id ? await getCity(c.env, news.related_city_id) : null;
   const relatedPeople = await getPeopleByIds(c.env, parseIdArray(news.related_people));
   const relatedOrgs = await getOrganizationsByIds(c.env, parseIdArray(news.related_organizations));
+  const reporter = news.reporter_person_id ? await getPerson(c.env, news.reporter_person_id) : null;
 
   return c.html(
     page({
       title: news.title,
       activePath: "/news",
       worldDate: world?.current_date,
-      body: newsDetailView(news, city?.name ?? null, relatedPeople, relatedOrgs),
+      body: newsDetailView(news, city?.name ?? null, relatedPeople, relatedOrgs, reporter),
     }).value
   );
 });
@@ -510,7 +516,15 @@ app.get("/api/admin/news/:id", async (c) => {
   if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
   const news = await getNews(c.env, id);
   if (!news) return c.json({ error: "not found" }, 404);
-  return c.json({ id: news.id, title: news.title, body: news.body, category: news.category });
+  const reporter = news.reporter_person_id ? await getPerson(c.env, news.reporter_person_id) : null;
+  return c.json({
+    id: news.id,
+    title: news.title,
+    body: news.body,
+    category: news.category,
+    reporter_person_id: news.reporter_person_id,
+    reporter_name: reporter?.name ?? null,
+  });
 });
 
 app.put("/api/admin/news/:id", async (c) => {
@@ -526,7 +540,13 @@ app.put("/api/admin/news/:id", async (c) => {
   if (!(NEWS_CATEGORIES as readonly string[]).includes(category)) {
     return c.json({ error: "invalid category" }, 400);
   }
-  await updateNews(c.env, id, { title, body: text, category });
+  const reporterId =
+    typeof body?.reporterId === "number" && Number.isInteger(body.reporterId) ? body.reporterId : null;
+  if (reporterId !== null) {
+    const reporter = await getPerson(c.env, reporterId);
+    if (!reporter) return c.json({ error: "reporter not found" }, 400);
+  }
+  await updateNews(c.env, id, { title, body: text, category, reporter_person_id: reporterId });
   return c.json({ ok: true });
 });
 
@@ -576,6 +596,8 @@ app.post("/api/admin/news/generate", async (c) => {
       : null;
   const keywords =
     typeof body?.keywords === "string" && body.keywords.trim() ? body.keywords.trim().slice(0, 200) : null;
+  const reporterIdRaw =
+    typeof body?.reporterId === "number" && Number.isInteger(body.reporterId) ? body.reporterId : null;
 
   const world = await getWorld(c.env);
   if (!world) return c.json({ error: "world not found" }, 500);
@@ -585,6 +607,14 @@ app.post("/api/admin/news/generate", async (c) => {
   const inferredCityId = hintOrgs[0]?.city_id ?? hintPeople[0]?.city_id ?? 1;
   const city = await getCity(c.env, inferredCityId ?? 1);
   if (!city) return c.json({ error: "city not found" }, 500);
+
+  let reporterId: number | null = reporterIdRaw;
+  if (reporterId !== null) {
+    const reporter = await getPerson(c.env, reporterId);
+    if (!reporter) return c.json({ error: "reporter not found" }, 400);
+  } else {
+    reporterId = await getRandomReporterId(c.env, city.id);
+  }
 
   const [orgsResult, peopleResult, recentEventsResult] = await Promise.all([
     listOrganizationsByCity(c.env, city.id),
@@ -668,7 +698,7 @@ app.post("/api/admin/news/generate", async (c) => {
       relatedOrgNames,
     }
   );
-  const newsAiResult = await callAiForJson(c.env, c.env.AI_NEWS_MODEL, newsSystem, newsUser);
+  const newsAiResult = await callAiForJson(c.env, c.env.AI_NEWS_MODEL, newsSystem, newsUser, 1600);
   let newsDraft = newsAiResult.ok ? validateNewsDraft(newsAiResult.json) : null;
   if (!newsDraft) {
     newsDraft = {
@@ -704,8 +734,8 @@ app.post("/api/admin/news/generate", async (c) => {
 
   const newsInsert = await c.env.DB.prepare(
     `INSERT INTO news
-       (title, body, published_at, occurred_at, category, related_people, related_organizations, related_city_id, event_id, generated_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (title, body, published_at, occurred_at, category, related_people, related_organizations, related_city_id, event_id, reporter_person_id, generated_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       newsDraft.title,
@@ -717,6 +747,7 @@ app.post("/api/admin/news/generate", async (c) => {
       JSON.stringify(relatedOrgIds),
       city.id,
       eventId,
+      reporterId,
       "admin_ai_assisted",
       nowIso()
     )
@@ -758,6 +789,16 @@ app.post("/api/admin/news/manual", async (c) => {
   if (!world) return c.json({ error: "world not found" }, 500);
   const cityId = relatedOrgs[0]?.city_id ?? relatedPeople[0]?.city_id ?? 1;
 
+  const reporterIdRaw =
+    typeof body?.reporterId === "number" && Number.isInteger(body.reporterId) ? body.reporterId : null;
+  let reporterId: number | null = reporterIdRaw;
+  if (reporterId !== null) {
+    const reporter = await getPerson(c.env, reporterId);
+    if (!reporter) return c.json({ error: "reporter not found" }, 400);
+  } else {
+    reporterId = await getRandomReporterId(c.env, cityId);
+  }
+
   const stateChanges = validateStateChanges(body?.stateChanges, new Set(relatedPeopleIds), new Set(relatedOrgIds));
   const appliedImpact = await applyStateChanges(c.env, stateChanges, world.current_date, relatedPeopleIds);
 
@@ -782,8 +823,8 @@ app.post("/api/admin/news/manual", async (c) => {
 
   const newsInsert = await c.env.DB.prepare(
     `INSERT INTO news
-       (title, body, published_at, occurred_at, category, related_people, related_organizations, related_city_id, event_id, generated_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'admin_manual', ?)`
+       (title, body, published_at, occurred_at, category, related_people, related_organizations, related_city_id, event_id, reporter_person_id, generated_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'admin_manual', ?)`
   )
     .bind(
       title,
@@ -795,6 +836,7 @@ app.post("/api/admin/news/manual", async (c) => {
       JSON.stringify(relatedOrgIds),
       cityId,
       eventId,
+      reporterId,
       nowIso()
     )
     .run();
@@ -814,7 +856,9 @@ app.get("/api/admin/people-list", async (c) => {
   const authError = checkAdminAuth(c);
   if (authError) return authError;
   const q = c.req.query("q") ?? "";
-  const people = q ? await searchPeopleAdmin(c.env, q, 50) : await listPeopleByKana(c.env, 50);
+  const occupation = c.req.query("occupation") ?? "";
+  const status = c.req.query("status") ?? "";
+  const people = await listPeopleAdmin(c.env, { q, occupation, status });
   return c.json({
     people: (people.results ?? []).map((p) => ({
       id: p.id,
@@ -946,6 +990,54 @@ app.post("/api/admin/people", async (c) => {
     ...parsePersonLifeDetails(body),
   });
   return c.json({ ok: true, id });
+});
+
+// ---- 管理画面: 職業タイプ管理 ----
+
+app.get("/api/admin/occupation-types", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const types = await listOccupationTypes(c.env);
+  return c.json({ occupationTypes: types.results ?? [] });
+});
+
+app.post("/api/admin/occupation-types", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const name = typeof body?.name === "string" ? body.name.trim().slice(0, 40) : "";
+  if (!name) return c.json({ error: "name is required" }, 400);
+  try {
+    const id = await createOccupationType(c.env, name);
+    return c.json({ ok: true, id });
+  } catch (err) {
+    return c.json({ error: "この職業名はすでに登録されています" }, 400);
+  }
+});
+
+app.put("/api/admin/occupation-types/:id", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const body = await c.req.json().catch(() => null);
+  const name = typeof body?.name === "string" ? body.name.trim().slice(0, 40) : "";
+  if (!name) return c.json({ error: "name is required" }, 400);
+  try {
+    await updateOccupationType(c.env, id, name);
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: "この職業名はすでに登録されています" }, 400);
+  }
+});
+
+app.delete("/api/admin/occupation-types/:id", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  await deleteOccupationType(c.env, id);
+  return c.json({ ok: true });
 });
 
 // ---- 管理画面: 人間関係・家系図 ----

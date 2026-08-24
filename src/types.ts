@@ -112,6 +112,7 @@ export interface NewsRow {
   related_organizations: string | null;
   related_city_id: number | null;
   event_id: number;
+  reporter_person_id: number | null;
   generated_by: string;
   created_at: string;
 }
@@ -143,4 +144,11 @@ export interface SimulationRunRow {
   event_id: number | null;
   news_id: number | null;
   error: string | null;
+}
+
+export interface OccupationTypeRow {
+  id: number;
+  name: string;
+  created_at: string;
+  updated_at: string;
 }

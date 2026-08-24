@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import {
   getCity,
+  getRandomReporterId,
   getWorld,
   listActiveCities,
   listOrganizationsByCity,
@@ -233,7 +234,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
           relatedOrgNames,
         }
       );
-      const newsAiResult = await callAiForJson(env, env.AI_NEWS_MODEL, system, user);
+      const newsAiResult = await callAiForJson(env, env.AI_NEWS_MODEL, system, user, 1600);
       aiCallsUsed++;
       if (newsAiResult.ok) {
         newsDraft = validateNewsDraft(newsAiResult.json);
@@ -249,10 +250,14 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       };
     }
 
+    // 記事末尾の「記者: (名前)」表記用に、その都市の記者(occupation='記者')からランダムに1人選ぶ。
+    // 該当者がいない場合はnullのまま(表記なしで問題ない)。
+    const reporterId = await getRandomReporterId(env, cityId);
+
     const newsInsert = await env.DB.prepare(
       `INSERT INTO news
-        (title, body, published_at, occurred_at, category, related_people, related_organizations, related_city_id, event_id, generated_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (title, body, published_at, occurred_at, category, related_people, related_organizations, related_city_id, event_id, reporter_person_id, generated_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         newsDraft.title,
@@ -264,6 +269,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
         JSON.stringify(eventDraft.related_organization_ids),
         cityId,
         eventId,
+        reporterId,
         source === "ai" ? env.AI_NEWS_MODEL : "fallback_template",
         now()
       )
