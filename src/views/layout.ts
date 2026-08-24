@@ -369,6 +369,12 @@ const STYLE = `
   footer.site p.copyright { margin-bottom: 0; opacity: 0.75; }
 
   @media (max-width: 520px) {
+    .about-btn {
+      position: static;
+      display: block;
+      width: fit-content;
+      margin: 0.6rem auto 0;
+    }
     .masthead h1 { font-size: 1.7rem; }
     nav.site { gap: 0.9rem; font-size: 0.82rem; }
     main { padding: 1.1rem 0.8rem 3rem; }

@@ -2,9 +2,13 @@ import { html, raw, RawHtml } from "../utils/html";
 import { formatDateTimeJa, formatWorldDateJa } from "../utils/date";
 import type { NewsRow, OrganizationRow, PersonRow } from "../types";
 
+// AIは段落の区切りに\n\n(空行)ではなく単なる\n(改行1つ)を使うことも多く、
+// \n{2,}だけで分割すると複数の文がひとつの<p>に押し込まれて読みにくくなっていた
+// （管理画面の完全手動作成でも同様、改行を1つ入れただけでは反映されない不具合があった）。
+// 改行の数に関わらず、1行=1段落として扱う。
 function bodyParagraphs(body: string): RawHtml {
   const paragraphs = body
-    .split(/\n{2,}/)
+    .split(/\n+/)
     .map((p) => p.trim())
     .filter(Boolean);
   const list = (paragraphs.length ? paragraphs : [body]).map((p) => html`<p>${p}</p>`.value).join("");

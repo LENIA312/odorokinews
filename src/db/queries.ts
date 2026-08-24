@@ -387,13 +387,20 @@ export function updateNews(env: Env, id: number, fields: NewsUpdateFields): Prom
 
 // その都市に所属する記者(occupation='記者')をランダムに1人選ぶ。
 // 記事末尾の「記者: (名前)」表記に使う。該当者がいなければnull(表記なしで問題ない)。
+// その都市に記者がいない場合（新しく増えた都市はまだ記者が誰もいないことが多い）、
+// モーゼン・クロニクルは全国紙という体で、他都市の記者が現地取材した扱いにして
+// 誰かしら記者を割り当てる。都市ごとに必ず記者を用意しないといけない設計にはしない。
 export async function getRandomReporterId(env: Env, cityId: number): Promise<number | null> {
-  const row = await env.DB.prepare(
+  const local = await env.DB.prepare(
     "SELECT id FROM people WHERE occupation = '記者' AND city_id = ? ORDER BY RANDOM() LIMIT 1"
   )
     .bind(cityId)
     .first<{ id: number }>();
-  return row?.id ?? null;
+  if (local) return local.id;
+  const any = await env.DB.prepare("SELECT id FROM people WHERE occupation = '記者' ORDER BY RANDOM() LIMIT 1").first<{
+    id: number;
+  }>();
+  return any?.id ?? null;
 }
 
 // ニュースを削除する。対応するevents/timelineも合わせて削除し、

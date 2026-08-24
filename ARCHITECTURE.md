@@ -69,6 +69,10 @@ GitHubリポジトリ: `https://github.com/LENIA312/odorokinews`（public）。
   取材・街や人物が日々成長していく仕組みを、上記の「シミュレーション」という語を避けつつ分かりやすく
   紹介するモーダルが開く（`layout.ts`の`ABOUT_SCRIPT`/`ABOUT_MODAL_BODY`）。**初回アクセス時は
   localStorage(`mosen_chronicle_about_seen`)に記録が無ければ自動的に開く**（強制表示は初回のみ）。
+  ボタンはHTML上`.masthead`より前に置かれ、通常は`position:absolute`でヘッダー右上に重ねて
+  表示するが、幅520px以下（`@media (max-width: 520px)`）では`position:static`に切り替えて
+  タイトルの直前に通常フローで積む。スマホ幅では絶対配置のままだとタイトル文字と重なって
+  しまう不具合があったための対応。
 - 全ページにOGP/Twitter Card用のメタタグを出力しており、XやLINE等でURLを共有した際に
   タイトル・説明文・バナー画像（`/og-image.png`）付きのリンクカードが表示される（10.1節）。
 
@@ -296,7 +300,7 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 | related_people / related_organizations | TEXT | JSON配列（ID） |
 | related_city_id | INTEGER? FK→cities | |
 | event_id | INTEGER NOT NULL FK→events | 1記事=1イベント |
-| reporter_person_id | INTEGER? FK→people | 0008で追加。記事末尾の「記者: (名前)」表記に使う。日次シミュレーションでは`getRandomReporterId`でその都市の`occupation='記者'`の人物からランダムに1人自動選出（該当なしなら`null`のまま表記なし）。管理画面のAI補助/完全手動作成では明示的に指定でき、未指定なら同じロジックで自動割り当てされる |
+| reporter_person_id | INTEGER? FK→people | 0008で追加。記事末尾の「記者: (名前)」表記に使う。日次シミュレーションでは`getRandomReporterId`でその都市の`occupation='記者'`の人物からランダムに1人自動選出。**その都市に記者がいない場合は、都市を問わず全体から記者をランダムに1人選ぶフォールバックを行う**（全国紙という体で他都市の記者が現地取材した扱い。以前はその都市限定で該当なしなら`null`のまま表記なしにしていたが、記者は今のところダイナン市在住者しかおらず、他都市の記事に軒並みバイラインが付かなくなってしまっていたため変更した）。管理画面のAI補助/完全手動作成では明示的に指定でき、未指定なら同じロジックで自動割り当てされる |
 | generated_by | TEXT | AIモデル名 / `fallback_template` / `admin_ai_assisted` / `admin_manual` |
 | created_at | TEXT | |
 
@@ -1310,3 +1314,10 @@ AIの自己申告（「これは重要な出来事か」をAI自身に判定さ�
   直接的な語り口に変更（14.1節）。地図領域の縦幅を拡大し（`min-height:62vh`）、選択中の人物名を
   大きく表示するよう変更（7.4節）。マイグレーション0010で`simulation_runs.world_date`のUNIQUE
   制約を撤廃し、`world.last_date_tick_at`と`ai_call_logs`テーブルを追加。
+- 2026-08-25: 記事本文の段落分割(`newsDetail.ts`の`bodyParagraphs`)が`\n{2,}`（空行）のみを
+  区切りとみなしていたため、AIや管理画面の完全手動作成が単なる`\n`（改行1つ）で行を分けた場合に
+  複数の文がひとつの`<p>`へ押し込まれて読みにくくなっていた不具合を修正。改行の数に関わらず
+  1行=1段落として扱うようにした（`\n+`で分割）。`getRandomReporterId`は、記者が現在ダイナン市
+  在住者しかいないため他都市の記事にバイラインが付かなくなっていた問題を修正: その都市に記者が
+  いない場合、都市を問わず全体からランダムに1人選ぶフォールバックを追加した（全国紙という体で
+  他都市の記者が現地取材した扱い）。既に公開済みだった記者なしの記事1件も手動で補完。
