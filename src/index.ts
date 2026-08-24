@@ -5,7 +5,9 @@ import {
   createCity,
   createOrganization,
   createPerson,
+  createRelationshipPair,
   deleteNewsCascade,
+  deleteRelationshipPair,
   getCity,
   getEvent,
   getNews,
@@ -41,7 +43,16 @@ import {
   updateWorldWeather,
 } from "./db/queries";
 import { html } from "./utils/html";
-import { CITY_STATUSES, NEWS_CATEGORIES, ORG_KINDS, ORG_STATUSES, PERSON_STATUSES, WEATHER_CONDITIONS } from "./constants";
+import {
+  CITY_STATUSES,
+  NEWS_CATEGORIES,
+  ORG_KINDS,
+  ORG_STATUSES,
+  PERSON_STATUSES,
+  RELATION_TYPE_REVERSE,
+  RELATION_TYPES,
+  WEATHER_CONDITIONS,
+} from "./constants";
 import { page } from "./views/layout";
 import { newsListSection, categoryTabs } from "./views/newsList";
 import { newsDetailView } from "./views/newsDetail";
@@ -174,8 +185,9 @@ app.get("/people/:id", async (c) => {
   }
 
   const world = await getWorld(c.env);
-  const [organization, relRows, relatedNews] = await Promise.all([
+  const [organization, city, relRows, relatedNews] = await Promise.all([
     person.organization_id ? getOrganization(c.env, person.organization_id) : Promise.resolve(null),
+    person.city_id ? getCity(c.env, person.city_id) : Promise.resolve(null),
     listRelationshipsForPerson(c.env, id),
     listNewsForPerson(c.env, id),
   ]);
@@ -192,7 +204,7 @@ app.get("/people/:id", async (c) => {
       title: person.name,
       activePath: "/people",
       worldDate: world?.current_date,
-      body: personDetailView(person, organization, relationships, relatedNews),
+      body: personDetailView(person, organization, city, relationships, relatedNews),
     }).value
   );
 });
@@ -623,6 +635,10 @@ app.post("/api/admin/news/generate", async (c) => {
       money: 0,
       status: "alive",
       bio: null,
+      annual_income: null,
+      job_title: null,
+      birth_date: null,
+      birthplace: null,
     });
     createdPeopleIds.push(newId);
     createdPeopleNames.push(np.name);
@@ -820,6 +836,22 @@ app.get("/api/admin/people/:id", async (c) => {
   return c.json(person);
 });
 
+const WORLD_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function parsePersonLifeDetails(body: Record<string, unknown>) {
+  const annualIncome =
+    typeof body.annual_income === "number" && Number.isFinite(body.annual_income) && body.annual_income >= 0
+      ? Math.round(body.annual_income)
+      : null;
+  const jobTitle =
+    typeof body.job_title === "string" && body.job_title.trim() ? body.job_title.trim().slice(0, 40) : null;
+  const birthDate =
+    typeof body.birth_date === "string" && WORLD_DATE_RE.test(body.birth_date.trim()) ? body.birth_date.trim() : null;
+  const birthplace =
+    typeof body.birthplace === "string" && body.birthplace.trim() ? body.birthplace.trim().slice(0, 40) : null;
+  return { annual_income: annualIncome, job_title: jobTitle, birth_date: birthDate, birthplace };
+}
+
 app.put("/api/admin/people/:id", async (c) => {
   const authError = checkAdminAuth(c);
   if (authError) return authError;
@@ -862,6 +894,7 @@ app.put("/api/admin/people/:id", async (c) => {
     money,
     status,
     bio,
+    ...parsePersonLifeDetails(body),
   });
   return c.json({ ok: true });
 });
@@ -910,8 +943,130 @@ app.post("/api/admin/people", async (c) => {
     money,
     status,
     bio,
+    ...parsePersonLifeDetails(body),
   });
   return c.json({ ok: true, id });
+});
+
+// ---- 管理画面: 人間関係・家系図 ----
+
+app.get("/api/admin/people/:id/relationships", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const rows = await listRelationshipsForPerson(c.env, id);
+  const relRows = rows.results ?? [];
+  const others = await getPeopleByIds(c.env, relRows.map((r) => r.related_person_id));
+  const othersById = new Map(others.map((p) => [p.id, p]));
+  const relationships = relRows
+    .map((r) => {
+      const other = othersById.get(r.related_person_id);
+      if (!other) return null;
+      return { relatedPersonId: other.id, relatedPersonName: other.name, relationType: r.relation_type };
+    })
+    .filter((r): r is { relatedPersonId: number; relatedPersonName: string; relationType: string } => r !== null);
+  return c.json({ relationships });
+});
+
+app.post("/api/admin/relationships", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const personId = typeof body?.personId === "number" && Number.isInteger(body.personId) ? body.personId : null;
+  const relatedPersonId =
+    typeof body?.relatedPersonId === "number" && Number.isInteger(body.relatedPersonId) ? body.relatedPersonId : null;
+  const relationType =
+    typeof body?.relationType === "string" && (RELATION_TYPES as readonly string[]).includes(body.relationType)
+      ? body.relationType
+      : null;
+  if (!personId || !relatedPersonId || !relationType) {
+    return c.json({ error: "personId, relatedPersonId, relationType are required" }, 400);
+  }
+  if (personId === relatedPersonId) return c.json({ error: "cannot relate a person to themselves" }, 400);
+  const [a, b] = await Promise.all([getPerson(c.env, personId), getPerson(c.env, relatedPersonId)]);
+  if (!a || !b) return c.json({ error: "person not found" }, 404);
+
+  const reverseType = RELATION_TYPE_REVERSE[relationType] ?? relationType;
+  await createRelationshipPair(c.env, personId, relatedPersonId, relationType, reverseType);
+  return c.json({ ok: true });
+});
+
+app.delete("/api/admin/relationships", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const personId = typeof body?.personId === "number" && Number.isInteger(body.personId) ? body.personId : null;
+  const relatedPersonId =
+    typeof body?.relatedPersonId === "number" && Number.isInteger(body.relatedPersonId) ? body.relatedPersonId : null;
+  const relationType =
+    typeof body?.relationType === "string" && (RELATION_TYPES as readonly string[]).includes(body.relationType)
+      ? body.relationType
+      : null;
+  if (!personId || !relatedPersonId || !relationType) {
+    return c.json({ error: "personId, relatedPersonId, relationType are required" }, 400);
+  }
+  const reverseType = RELATION_TYPE_REVERSE[relationType] ?? relationType;
+  await deleteRelationshipPair(c.env, personId, relatedPersonId, relationType, reverseType);
+  return c.json({ ok: true });
+});
+
+// 出産の記録: 母親(必須)・父親(任意)から新しい人物を作成し、親子関係
+// (+ 既存の子がいれば兄弟姉妹関係も)を自動的に結ぶ。
+app.post("/api/admin/people/childbirth", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const motherId = typeof body?.motherId === "number" && Number.isInteger(body.motherId) ? body.motherId : null;
+  if (!motherId) return c.json({ error: "motherId is required" }, 400);
+  const fatherId = typeof body?.fatherId === "number" && Number.isInteger(body.fatherId) ? body.fatherId : null;
+  const name = typeof body?.name === "string" ? body.name.trim().slice(0, 40) : "";
+  if (!name) return c.json({ error: "name is required" }, 400);
+  const nameKanaRaw = typeof body?.name_kana === "string" ? body.name_kana.trim().slice(0, 60) : "";
+  const nameKana = nameKanaRaw && /^[ぁ-ゖゝ-ゟー・\s]+$/.test(nameKanaRaw) ? nameKanaRaw : null;
+  const gender = typeof body?.gender === "string" && body.gender.trim() ? body.gender.trim().slice(0, 20) : null;
+
+  const mother = await getPerson(c.env, motherId);
+  if (!mother) return c.json({ error: "mother not found" }, 404);
+  const father = fatherId ? await getPerson(c.env, fatherId) : null;
+  if (fatherId && !father) return c.json({ error: "father not found" }, 404);
+
+  const world = await getWorld(c.env);
+  if (!world) return c.json({ error: "world not found" }, 500);
+  const motherCity = mother.city_id ? await getCity(c.env, mother.city_id) : null;
+
+  const babyId = await createPerson(c.env, {
+    name,
+    name_kana: nameKana,
+    age: 0,
+    gender,
+    city_id: mother.city_id ?? 1,
+    occupation: null,
+    organization_id: null,
+    money: 0,
+    status: "alive",
+    bio: null,
+    annual_income: null,
+    job_title: null,
+    birth_date: world.current_date,
+    birthplace: motherCity?.name ?? null,
+  });
+
+  await createRelationshipPair(c.env, mother.id, babyId, "family_child", "family_parent");
+  if (father) {
+    await createRelationshipPair(c.env, father.id, babyId, "family_child", "family_parent");
+  }
+
+  // 母親の既存の子（今回生まれた子以外）とは兄弟姉妹として結ぶ。
+  const motherRelResult = await listRelationshipsForPerson(c.env, mother.id);
+  const existingChildIds = (motherRelResult.results ?? [])
+    .filter((r) => r.relation_type === "family_child" && r.related_person_id !== babyId)
+    .map((r) => r.related_person_id);
+  for (const siblingId of existingChildIds) {
+    await createRelationshipPair(c.env, babyId, siblingId, "family_sibling", "family_sibling");
+  }
+
+  return c.json({ ok: true, id: babyId });
 });
 
 // ---- 管理画面: 経済コントロール ----

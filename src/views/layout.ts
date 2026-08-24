@@ -209,6 +209,26 @@ const STYLE = `
     padding: 0.2rem 0.7rem;
     background: var(--bg);
   }
+  .chip.self {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    font-weight: 700;
+  }
+
+  .family-tree { margin-top: 0.3rem; }
+  .family-tree-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.35rem 0;
+  }
+  .family-tree-row .row-label {
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+    min-width: 3.4em;
+  }
 
   table.plain {
     width: 100%;

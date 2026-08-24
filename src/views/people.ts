@@ -1,15 +1,7 @@
 import { html, raw, RawHtml } from "../utils/html";
 import { KANA_ROWS, kanaRowOf } from "../utils/kana";
+import { PERSON_STATUS_LABEL } from "../constants";
 import type { OrganizationRow, PersonRow } from "../types";
-
-const STATUS_LABEL: Record<string, string> = {
-  alive: "",
-  injured: "負傷",
-  hospitalized: "入院中",
-  deceased: "故人",
-  celebrating: "話題の人物",
-  under_investigation: "調査中",
-};
 
 const STYLE_EXTRA = [
   ".kana-index { display:flex; flex-wrap:wrap; gap:0.35rem; margin-bottom:0.8rem; }",
@@ -36,7 +28,7 @@ export function peopleListView(people: PersonRow[], orgById: Map<number, Organiz
   const cards = people
     .map((p) => {
       const org = p.organization_id ? orgById.get(p.organization_id) : undefined;
-      const statusLabel = STATUS_LABEL[p.status] ?? p.status;
+      const statusLabel = p.status === "alive" ? "" : PERSON_STATUS_LABEL[p.status] ?? p.status;
       const row = kanaRowOf(p.name_kana);
       const searchKey = `${p.name}${p.name_kana ?? ""}`.toLowerCase();
       return html`<a

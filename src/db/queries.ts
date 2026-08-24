@@ -73,6 +73,44 @@ export function listRelationshipsForPerson(env: Env, personId: number): Promise<
   return env.DB.prepare("SELECT * FROM relationships WHERE person_id = ?").bind(personId).all<RelationshipRow>();
 }
 
+// 関係は必ず両方向(例: family_parent⇔family_child、spouse⇔spouse)で1組として保存する。
+// 結婚・家族関係の追加や、出産による親子・兄弟姉妹リンクの作成はすべてこれ経由で行う。
+export async function createRelationshipPair(
+  env: Env,
+  personId: number,
+  relatedPersonId: number,
+  relationType: string,
+  reverseRelationType: string
+): Promise<void> {
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO relationships (person_id, related_person_id, relation_type, created_at) VALUES (?, ?, ?, ?)"
+    ).bind(personId, relatedPersonId, relationType, now),
+    env.DB.prepare(
+      "INSERT INTO relationships (person_id, related_person_id, relation_type, created_at) VALUES (?, ?, ?, ?)"
+    ).bind(relatedPersonId, personId, reverseRelationType, now),
+  ]);
+}
+
+// 表示されている1件(personId視点)を削除する際、対になっているもう片方の行も一緒に削除する。
+export async function deleteRelationshipPair(
+  env: Env,
+  personId: number,
+  relatedPersonId: number,
+  relationType: string,
+  reverseRelationType: string
+): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare(
+      "DELETE FROM relationships WHERE person_id = ? AND related_person_id = ? AND relation_type = ?"
+    ).bind(personId, relatedPersonId, relationType),
+    env.DB.prepare(
+      "DELETE FROM relationships WHERE person_id = ? AND related_person_id = ? AND relation_type = ?"
+    ).bind(relatedPersonId, personId, reverseRelationType),
+  ]);
+}
+
 // related_people はJSON配列で保存されているため、SQLのLIKEでは安全に
 // 部分一致できない（"1" が "12" にもマッチしてしまう等）。
 // ニュース件数は1日1件程度で少量である前提のもと、直近分を取得して
@@ -275,13 +313,18 @@ export interface PersonUpdateFields {
   money: number;
   status: string;
   bio: string | null;
+  annual_income: number | null;
+  job_title: string | null;
+  birth_date: string | null;
+  birthplace: string | null;
 }
 
 export function updatePerson(env: Env, id: number, fields: PersonUpdateFields): Promise<D1Result> {
   return env.DB.prepare(
     `UPDATE people
      SET name = ?, name_kana = ?, age = ?, gender = ?, occupation = ?,
-         organization_id = ?, money = ?, status = ?, bio = ?, updated_at = ?
+         organization_id = ?, money = ?, status = ?, bio = ?,
+         annual_income = ?, job_title = ?, birth_date = ?, birthplace = ?, updated_at = ?
      WHERE id = ?`
   )
     .bind(
@@ -294,6 +337,10 @@ export function updatePerson(env: Env, id: number, fields: PersonUpdateFields): 
       fields.money,
       fields.status,
       fields.bio,
+      fields.annual_income,
+      fields.job_title,
+      fields.birth_date,
+      fields.birthplace,
       new Date().toISOString(),
       id
     )
@@ -311,14 +358,19 @@ export interface PersonCreateFields {
   money: number;
   status: string;
   bio: string | null;
+  annual_income: number | null;
+  job_title: string | null;
+  birth_date: string | null;
+  birthplace: string | null;
 }
 
 export async function createPerson(env: Env, fields: PersonCreateFields): Promise<number> {
   const now = new Date().toISOString();
   const result = await env.DB.prepare(
     `INSERT INTO people
-       (name, name_kana, age, gender, city_id, occupation, organization_id, money, status, origin, bio, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'admin_manual', ?, ?, ?)`
+       (name, name_kana, age, gender, city_id, occupation, organization_id, money, status, origin, bio,
+        annual_income, job_title, birth_date, birthplace, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'admin_manual', ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       fields.name,
@@ -331,6 +383,10 @@ export async function createPerson(env: Env, fields: PersonCreateFields): Promis
       fields.money,
       fields.status,
       fields.bio,
+      fields.annual_income,
+      fields.job_title,
+      fields.birth_date,
+      fields.birthplace,
       now,
       now
     )

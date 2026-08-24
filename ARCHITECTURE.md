@@ -183,15 +183,29 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron
 | occupation | TEXT? | 0001 | |
 | organization_id | INTEGER? FK→organizations | 0001 | |
 | money | INTEGER | 0001 | 所持金（現状ゲームプレイには未使用、表示のみ） |
-| status | TEXT | 0001 | `PERSON_STATUSES`: alive / injured / hospitalized / deceased / celebrating / under_investigation |
-| origin | TEXT | 0001 | `simulation`(seed投入) / `news_generated`(AIが記事内で新規作成) / `admin_manual`(管理画面から追加) |
+| status | TEXT | 0001 | `PERSON_STATUSES`: alive / sick / injured / hospitalized / deceased / celebrating / under_investigation |
+| origin | TEXT | 0001 | `simulation`(seed投入) / `news_generated`(AIが記事内で新規作成) / `admin_manual`(管理画面から追加。出産記録経由の新生児もこれ) |
 | bio | TEXT? | 0001 | |
+| annual_income | INTEGER? | 0007 | 年収。AIが新規作成する人物には付与されず（`null`のまま）、管理画面から後で設定する想定 |
+| job_title | TEXT? | 0007 | 役職（例: 課長、代表取締役）。`occupation`（職業）とは別軸 |
+| birth_date | TEXT? | 0007 | 生年月日。世界暦 `YYYY-MM-DD`。`age`から自動算出はしない（別々に管理する静的な値） |
+| birthplace | TEXT? | 0007 | 生まれ（自由記述）。出産記録機能を使うと母親の所在都市名が自動で入る |
 | created_at / updated_at | TEXT | 0001 | |
 
 #### `relationships`
 
-`person_id` ↔ `related_person_id` の関係（family/friend/colleague/spouse等）。現状は初期投入データのみで、
-シミュレーションが自動で関係を追加する機能はまだ無い。
+`person_id` ↔ `related_person_id` の関係。**必ず両方向で1組のペアとして保存する**（例:
+Aの行が `relation_type='family_parent'`＝「Bは私の親」なら、Bの行は `relation_type='family_child'`＝
+「Aは私の子」を持つ）。`RELATION_TYPES`（`constants.ts`）: `family_parent` / `family_child` /
+`family_sibling` / `spouse` / `colleague` / `friend`。逆方向の対応表は `RELATION_TYPE_REVERSE`
+（spouse/colleague/friend/family_siblingは自分自身が逆、family_parent⇔family_childのみ非対称）。
+
+ペアの作成・削除は必ず `createRelationshipPair`/`deleteRelationshipPair`（`db/queries.ts`）経由で行い、
+手動で片方だけINSERT/DELETEしない（家系図表示・関係一覧の整合性が崩れるため）。管理画面の人物編集
+画面から直接追加・解除でき（8章）、「出産を記録」機能を使うと親子関係（+既存の子との`family_sibling`）が
+自動的に作られる。人物詳細ページ(`/people/:id`)の「家系図」セクションは、この`family_*`/`spouse`関係を
+世代別（親・本人+配偶者・兄弟姉妹・子）に整理して表示する（`personDetail.ts`の`buildFamilyTree`、
+DB問い合わせは直接の関係のみで祖父母・孫までは辿らない）。
 
 #### `events`（「実際に起きたこと」の事実レコード）
 
@@ -259,6 +273,7 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron
 | `0004_org_enrichment.sql` | `organizations.industry/employee_scale/founded_year/map_x/map_y`、`world.last_published_at`、創業6社への座標・業種の一括UPDATE |
 | `0005_city_management.sql` | `cities.status/map_x/map_y`。ダイナン市(id=1)を`active`かつ座標(650,430)に設定 |
 | `0006_weather.sql` | `world.weather`（デフォルト `'晴れ'`） |
+| `0007_person_life_details.sql` | `people.annual_income/job_title/birth_date/birthplace` |
 
 新しいマイグレーションを追加したら、このテーブルと4.1節の該当テーブルの説明を両方更新すること。
 
@@ -267,11 +282,15 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron
 | 定数 | 値 |
 |---|---|
 | `NEWS_CATEGORIES` | 社会, 経済, 政治, 事故, 文化, 科学, 魔法, スポーツ |
-| `PERSON_STATUSES` | alive, injured, hospitalized, deceased, celebrating, under_investigation |
+| `PERSON_STATUSES` | alive, sick, injured, hospitalized, deceased, celebrating, under_investigation |
+| `PERSON_STATUS_LABEL` | 上記の日本語ラベル（例: sick→療養中）。people.ts/personDetail.ts/map.tsで共通利用 |
 | `ORG_STATUSES` | active, expanding, under_investigation, recovering, celebrating, bankrupt |
 | `ORG_KINDS` | company, government, school, other |
 | `CITY_STATUSES` | active, draft |
 | `WEATHER_CONDITIONS` | 晴れ, 曇り, 雨, 雷雨, 霧, 雪, 強風, 魔力嵐 |
+| `RELATION_TYPES` | family_parent, family_child, family_sibling, spouse, colleague, friend |
+| `RELATION_TYPE_LABEL` | 上記の日本語ラベル（親/子/兄弟姉妹/配偶者/同僚/友人） |
+| `RELATION_TYPE_REVERSE` | ペア作成・削除時に使う逆方向の関係種別の対応表 |
 
 これらはDBの生値バリデーション・プロンプトへの列挙・管理画面のセレクトボックス生成すべての
 唯一のソースなので、値を増減する場合はここを変更するだけでよい設計になっている。
@@ -497,7 +516,7 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 |---|---|
 | 概要 | 手動シミュレーション実行ボタン、実行履歴、最新ニュース一覧 |
 | ニュース | 記事の一覧・編集（タイトル/本文/カテゴリ）・**削除**・**新規作成**（AI補助 / 完全手動の2方式） |
-| 人物 | 50音順一覧・検索・編集（全項目）・**新規作成** |
+| 人物 | 50音順一覧・検索・編集（役職/年収/生年月日/生まれを含む全項目）・**新規作成**・**人間関係の追加/解除**・**出産の記録** |
 | 経済 | 物価指数の更新、企業一覧・編集・**新規作成**（所在都市を選択可）、株価の個別更新 |
 | 都市 | 都市の一覧・**新規作成**・編集（Active/Draftの切り替えを含む） |
 | 設定 | 自動配信時刻の追加/削除/保存、**天候の変更** |
@@ -527,7 +546,25 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 - 企業作成: 所在都市を選択可能（デフォルト1=ダイナン市）。地図上の座標は7.2節のロジックで自動決定。
 - 都市作成: デフォルトは`draft`。地図上の座標も7.2節のロジックで自動決定。`id=1`を`draft`には
   戻せない（サーバー側でガード）。
-- 人物作成: 所在都市を選択可能。`origin='admin_manual'`として記録。
+- 人物作成: 所在都市を選択可能。`origin='admin_manual'`として記録。役職・年収・生年月日・生まれも
+  作成時から指定可能（4.1節参照）。
+
+### 8.4 人間関係の追加/解除・出産の記録
+
+人物編集画面内（**新規作成時は非表示**、既存人物の編集時のみ表示）に2つのサブセクションがある:
+
+- **人間関係・家系図**: `GET /api/admin/people/:id/relationships` で現在の関係一覧を表示。
+  名前検索で相手を選び、関係の種類（`RELATION_TYPES`）を選んで
+  `POST /api/admin/relationships`（`{personId, relatedPersonId, relationType}`）で追加、
+  一覧の「解除」ボタンから `DELETE /api/admin/relationships` で削除する。どちらも内部的には
+  4.1節の`createRelationshipPair`/`deleteRelationshipPair`を呼び、両方向のペアを一括で
+  作成/削除する。
+- **出産を記録**: `POST /api/admin/people/childbirth`（`{motherId, fatherId?, name, name_kana?,
+  gender?}`）。編集中の人物を母親として新しい人物を作成する。子は`age=0`・
+  `birth_date=world.current_date`（記録した時点の世界暦）・`birthplace=母親の所在都市名`で
+  作成され、母親（および指定があれば父親）との`family_parent`/`family_child`ペアが自動作成される。
+  さらに母親の既存の子（今回生まれた子以外）がいれば、その子たちとの`family_sibling`ペアも
+  自動的に張られる。
 
 ---
 
@@ -574,6 +611,9 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 | GET | `/api/admin/people-list` | 人物一覧（`?q=`で検索） |
 | GET/PUT | `/api/admin/people/:id` | 人物の取得/編集 |
 | POST | `/api/admin/people` | 人物の**新規作成** |
+| GET | `/api/admin/people/:id/relationships` | その人物の人間関係一覧 |
+| POST/DELETE | `/api/admin/relationships` | 人間関係の**追加/解除**（両方向ペア） |
+| POST | `/api/admin/people/childbirth` | **出産の記録**（新規人物作成+親子/兄弟姉妹関係の自動作成） |
 | GET | `/api/admin/economy-list` | 経済タブ用の企業一覧+株価+物価指数 |
 | POST/PUT | `/api/admin/organizations` `/organizations/:id` | 企業の新規作成/編集 |
 | POST | `/api/admin/economy/stock` | 株価の個別更新 |
@@ -680,7 +720,9 @@ npm run tail
 - 新しく`active`にした都市は、組織・人物が自動生成されるわけではない（手動追加 or AIの
   new_people頼み）。将来的に「都市ごとの初期シード生成」を作る余地がある。
 - ニュース削除は世界状態のロールバックを行わない（意図的な設計、8.2節）。
-- `relationships`（人間関係）はseedデータのみで、シミュレーションが自動で関係を追加する機能はまだ無い。
+- `relationships`（人間関係）は管理画面から手動で追加・出産記録経由で自動追加できるが、
+  シミュレーション（AIのイベント生成）が自動で関係を追加する機能はまだ無い。
+  家系図表示も直接の関係（親・子・兄弟姉妹・配偶者）のみで、祖父母・孫までは辿らない。
 - 経済シミュレーションは簡易的（株価のクランプ付きランダム変動+AI提案のみ、需給モデル等は無い）。
 - 住民1,000人規模の日次シミュレーションや複数ニュース媒体など、`docs.md`記載の将来拡張の多くは未着手。
 
@@ -692,3 +734,7 @@ npm run tail
 
 - 2026-08-25: 本ドキュメント新規作成。都市管理・天気機能・マップのモバイル対応・人物検索フォーカス・
   ニュースの削除/AI補助作成/完全手動作成・人物の新規作成までの実装状態を反映。
+- 2026-08-25: 人物に年収/役職/生年月日/生まれを追加。人物ステータスに`sick`（療養中）を追加。
+  人間関係を両方向ペアで管理する`RELATION_TYPES`を整備し、管理画面から人間関係の追加/解除・
+  「出産の記録」（新規人物作成+親子/兄弟姉妹関係の自動作成）が可能に。人物詳細ページに家系図
+  セクションを追加し、居住地表示のハードコードバグ（常に「ダイナン」表示）も修正。

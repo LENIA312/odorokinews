@@ -69,6 +69,10 @@ export interface PersonRow {
   status: string;
   origin: string;
   bio: string | null;
+  annual_income: number | null;
+  job_title: string | null;
+  birth_date: string | null;
+  birthplace: string | null;
   created_at: string;
   updated_at: string;
 }

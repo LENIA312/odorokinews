@@ -4,6 +4,7 @@ export type NewsCategory = (typeof NEWS_CATEGORIES)[number];
 
 export const PERSON_STATUSES = [
   "alive",
+  "sick",
   "injured",
   "hospitalized",
   "deceased",
@@ -11,6 +12,47 @@ export const PERSON_STATUSES = [
   "under_investigation",
 ] as const;
 export type PersonStatus = (typeof PERSON_STATUSES)[number];
+
+export const PERSON_STATUS_LABEL: Record<string, string> = {
+  alive: "健康",
+  sick: "療養中",
+  injured: "負傷",
+  hospitalized: "入院中",
+  deceased: "故人",
+  celebrating: "話題の人物",
+  under_investigation: "調査中",
+};
+
+// 家系図・人間関係で使う関係性の種類。person_id視点での表現で、
+// 1つの関係を作るときは必ず両方向の行(例: family_parent⇔family_child)を挿入する。
+export const RELATION_TYPES = [
+  "family_parent",
+  "family_child",
+  "family_sibling",
+  "spouse",
+  "colleague",
+  "friend",
+] as const;
+export type RelationType = (typeof RELATION_TYPES)[number];
+
+// 逆方向の関係。関係を1件削除する際、対になっているもう片方の行を特定するために使う。
+export const RELATION_TYPE_REVERSE: Record<string, string> = {
+  family_parent: "family_child",
+  family_child: "family_parent",
+  family_sibling: "family_sibling",
+  spouse: "spouse",
+  colleague: "colleague",
+  friend: "friend",
+};
+
+export const RELATION_TYPE_LABEL: Record<string, string> = {
+  family_parent: "親",
+  family_child: "子",
+  family_sibling: "兄弟姉妹",
+  spouse: "配偶者",
+  colleague: "同僚",
+  friend: "友人",
+};
 
 export const ORG_STATUSES = [
   "active",
