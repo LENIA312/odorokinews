@@ -3,6 +3,7 @@ import type {
   EconomicDataRow,
   Env,
   EventRow,
+  FacilityRow,
   NewsRow,
   OccupationTypeRow,
   OrganizationRow,
@@ -41,6 +42,52 @@ export function listOrganizationsByCity(env: Env, cityId: number): Promise<D1Res
   return env.DB.prepare("SELECT * FROM organizations WHERE city_id = ? ORDER BY id ASC")
     .bind(cityId)
     .all<OrganizationRow>();
+}
+
+export function getFacility(env: Env, id: number): Promise<FacilityRow | null> {
+  return env.DB.prepare("SELECT * FROM facilities WHERE id = ?").bind(id).first<FacilityRow>();
+}
+
+export function listFacilities(env: Env): Promise<D1Result<FacilityRow>> {
+  return env.DB.prepare("SELECT * FROM facilities ORDER BY id ASC").all<FacilityRow>();
+}
+
+export function listFacilitiesByCity(env: Env, cityId: number): Promise<D1Result<FacilityRow>> {
+  return env.DB.prepare("SELECT * FROM facilities WHERE city_id = ? ORDER BY id ASC")
+    .bind(cityId)
+    .all<FacilityRow>();
+}
+
+export interface FacilityCreateFields {
+  name: string;
+  kind: string;
+  city_id: number;
+  description: string | null;
+  map_x: number;
+  map_y: number;
+}
+
+export async function createFacility(env: Env, fields: FacilityCreateFields): Promise<number> {
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(
+    `INSERT INTO facilities (name, kind, city_id, description, map_x, map_y, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(fields.name, fields.kind, fields.city_id, fields.description, fields.map_x, fields.map_y, now, now)
+    .run();
+  return result.meta.last_row_id as number;
+}
+
+export interface FacilityUpdateFields {
+  name: string;
+  kind: string;
+  description: string | null;
+}
+
+export function updateFacility(env: Env, id: number, fields: FacilityUpdateFields): Promise<D1Result> {
+  return env.DB.prepare("UPDATE facilities SET name = ?, kind = ?, description = ?, updated_at = ? WHERE id = ?")
+    .bind(fields.name, fields.kind, fields.description, new Date().toISOString(), id)
+    .run();
 }
 
 export function listPeople(env: Env, limit = 60): Promise<D1Result<PersonRow>> {

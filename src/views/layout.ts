@@ -36,7 +36,69 @@ const STYLE = `
   header.site {
     background: var(--paper);
     border-bottom: 3px solid var(--ink);
+    position: relative;
   }
+  .about-btn {
+    position: absolute;
+    top: 0.7rem;
+    right: 0.9rem;
+    font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+    font-size: 0.7rem;
+    color: var(--ink-soft);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.3rem 0.7rem;
+    cursor: pointer;
+  }
+  .about-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  .about-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(20, 18, 14, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.2rem;
+    z-index: 100;
+  }
+  .about-modal-overlay.hidden { display: none; }
+  .about-modal {
+    background: var(--paper);
+    border-radius: 8px;
+    max-width: 560px;
+    max-height: 85vh;
+    overflow-y: auto;
+    padding: 1.6rem 1.6rem 1.8rem;
+    position: relative;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+  }
+  .about-modal h2 {
+    margin: 0 0 1rem;
+    font-size: 1.3rem;
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 0.4rem;
+  }
+  .about-modal-body {
+    font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+    font-size: 0.9rem;
+    line-height: 1.9;
+  }
+  .about-modal-body p { margin: 0 0 1rem; }
+  .about-modal-body strong { color: var(--accent); }
+  .about-modal-close {
+    position: absolute;
+    top: 0.8rem;
+    right: 0.9rem;
+    background: transparent;
+    border: none;
+    font-size: 1.3rem;
+    line-height: 1;
+    color: var(--ink-soft);
+    cursor: pointer;
+  }
+  .about-modal-close:hover { color: var(--accent); }
   .masthead {
     max-width: 880px;
     margin: 0 auto;
@@ -369,6 +431,45 @@ const CLOCK_SCRIPT = [
   "})();",
 ].join("\n");
 
+// 「モーゼン・クロニクルとは」モーダル。初回アクセス時は自動的に開き、
+// 一度開いたらlocalStorageに記録して以降は自動表示しない（手動ボタンではいつでも開ける）。
+const ABOUT_SCRIPT = [
+  "(function () {",
+  "  var KEY = 'mosen_chronicle_about_seen';",
+  "  var overlay = document.getElementById('aboutModal');",
+  "  var btn = document.getElementById('aboutBtn');",
+  "  if (!overlay || !btn) return;",
+  "  function markSeen() { try { localStorage.setItem(KEY, '1'); } catch (e) {} }",
+  "  function hasSeen() { try { return !!localStorage.getItem(KEY); } catch (e) { return false; } }",
+  "  function openModal() { overlay.classList.remove('hidden'); markSeen(); }",
+  "  function closeModal() { overlay.classList.add('hidden'); }",
+  "  btn.addEventListener('click', openModal);",
+  "  overlay.addEventListener('click', function (ev) { if (ev.target === overlay) closeModal(); });",
+  "  document.addEventListener('keydown', function (ev) {",
+  "    if (ev.key === 'Escape' && !overlay.classList.contains('hidden')) closeModal();",
+  "  });",
+  "  document.querySelectorAll('.about-modal-close').forEach(function (el) {",
+  "    el.addEventListener('click', closeModal);",
+  "  });",
+  "  if (!hasSeen()) { openModal(); }",
+  "})();",
+].join("\n");
+
+const ABOUT_MODAL_BODY = `
+  <p>モーゼン・クロニクルは、架空の国「モーゼン・アングラ」の首都ダイナン市などで実際に起きた
+  出来事を報じるニュースサイトです。</p>
+  <p>このサイトでいちばん変わっているのは、<strong>記事を人間が書いていない</strong>ところです。
+  この世界には、人物・企業・都市がそれぞれ実在するデータとして存在していて、日々何かが起こって
+  います――誰かが新しい会社を立ち上げたり、結婚して子供が生まれたり、時には体調を崩して
+  入院したり。そうして実際に起きた出来事を「記者AI」が取材し、記事に書き起こしてお届けしています。</p>
+  <p>だから同じ人物のページを何日か空けてもう一度見に行くと、年齢や職業、家族構成が
+  ちょっと変わっていることがあります。新しい人物が生まれたり、新しい会社ができたり、
+  ときには新しい街が地図に増えていたりすることも。「街の様子」ページでは、そうして生きている
+  住民たちが今も街を行き来している様子を眺めることができます。</p>
+  <p>気になった人物や企業がいたら、ぜひ「人物」「経済」「街の様子」のページも覗いてみてください。
+  この瞬間にも、モーゼン・アングラのどこかで次のニュースの種が生まれているかもしれません。</p>
+`;
+
 export function page(opts: { title: string; activePath: string; worldDate?: string; body: RawHtml }): RawHtml {
   const nav = NAV_ITEMS.map(
     (item) =>
@@ -395,6 +496,7 @@ export function page(opts: { title: string; activePath: string; worldDate?: stri
 </head>
 <body>
   <header class="site">
+    <button type="button" id="aboutBtn" class="about-btn">モーゼン・クロニクルとは</button>
     <div class="masthead">
       <div class="kicker">MOSE'N UNGRA CHRONICLE</div>
       <h1><a href="/" style="color:inherit">モーゼン・クロニクル</a></h1>
@@ -403,6 +505,13 @@ export function page(opts: { title: string; activePath: string; worldDate?: stri
     ${clock}
     <nav class="site">${raw(nav)}</nav>
   </header>
+  <div id="aboutModal" class="about-modal-overlay hidden">
+    <div class="about-modal">
+      <button type="button" class="about-modal-close" aria-label="閉じる">×</button>
+      <h2>モーゼン・クロニクルとは</h2>
+      <div class="about-modal-body">${raw(ABOUT_MODAL_BODY)}</div>
+    </div>
+  </div>
   <main>
     ${opts.body}
   </main>
@@ -411,6 +520,7 @@ export function page(opts: { title: string; activePath: string; worldDate?: stri
     <p class="copyright">©Pisorium ©MigiteniEdamame</p>
   </footer>
   <script>${raw(CLOCK_SCRIPT)}</script>
+  <script>${raw(ABOUT_SCRIPT)}</script>
 </body>
 </html>`;
 }

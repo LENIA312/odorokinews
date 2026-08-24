@@ -37,6 +37,8 @@ const productLaunch: Template = ({ cityName, orgs, people }) => {
       related_person_ids: spokesperson ? [spokesperson.id] : [],
       new_people: [],
       related_organization_ids: [org.id],
+      new_organizations: [],
+      new_facilities: [],
       state_changes: [],
     },
     news: {
@@ -59,6 +61,8 @@ const minorIncident: Template = ({ cityName, orgs }) => {
       related_person_ids: [],
       new_people: [],
       related_organization_ids: [org.id],
+      new_organizations: [],
+      new_facilities: [],
       state_changes: [],
     },
     news: {
@@ -81,6 +85,8 @@ const personAward: Template = ({ cityName, people }) => {
       related_person_ids: [person.id],
       new_people: [],
       related_organization_ids: [],
+      new_organizations: [],
+      new_facilities: [],
       state_changes: [],
     },
     news: {
@@ -101,6 +107,8 @@ const magicPhenomenon: Template = ({ cityName }) => {
       related_person_ids: [],
       new_people: [],
       related_organization_ids: [],
+      new_organizations: [],
+      new_facilities: [],
       state_changes: [],
     },
     news: {
@@ -127,6 +135,8 @@ const partnership: Template = ({ orgs }) => {
       related_person_ids: [],
       new_people: [],
       related_organization_ids: [a.id, b.id],
+      new_organizations: [],
+      new_facilities: [],
       state_changes: [],
     },
     news: {
@@ -159,6 +169,8 @@ export function generateFallbackEventAndNews(
       related_person_ids: [],
       new_people: [],
       related_organization_ids: [],
+      new_organizations: [],
+      new_facilities: [],
       state_changes: [],
     },
     news: {

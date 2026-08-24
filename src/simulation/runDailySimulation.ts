@@ -1,16 +1,20 @@
 import type { Env } from "../types";
 import {
+  createFacility,
+  createOrganization,
   getCity,
   getRandomReporterId,
   getWorld,
   listActiveCities,
+  listFacilitiesByCity,
   listOrganizationsByCity,
   listPeopleByCity,
   listRecentEvents,
-  parseIdArray,
   previousEconomicValue,
+  parseIdArray,
 } from "../db/queries";
-import { nextWorldDate } from "../utils/date";
+import { computeBirthDateFromAge, nextWorldDate } from "../utils/date";
+import { assignZonePositionForCity } from "../views/mapZones";
 import { callAiForJson } from "./ai";
 import { buildEventPrompt, buildNewsPrompt } from "./prompts";
 import { validateEventDraft, validateNewsDraft, type ValidatedEventDraft, type ValidatedNewsDraft } from "./validate";
@@ -74,12 +78,14 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       throw new Error("cities レコードが存在しない。seed.sql の投入を確認してください。");
     }
 
-    const [orgsResult, peopleResult, recentEventsResult] = await Promise.all([
+    const [orgsResult, facilitiesResult, peopleResult, recentEventsResult] = await Promise.all([
       listOrganizationsByCity(env, city.id),
+      listFacilitiesByCity(env, city.id),
       listPeopleByCity(env, city.id, 40),
       listRecentEvents(env, 5),
     ]);
     const organizations = orgsResult.results ?? [];
+    const facilities = facilitiesResult.results ?? [];
     const people = peopleResult.results ?? [];
     const recentEvents = recentEventsResult.results ?? [];
 
@@ -119,6 +125,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
     if (env.AI && maxCalls > 0) {
       const { system, user } = buildEventPrompt({
         worldName: world.name,
+        cityId,
         cityName,
         cityDescription,
         population,
@@ -130,7 +137,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       });
       const aiResult = await callAiForJson(env, env.AI_EVENT_MODEL, system, user);
       aiCallsUsed++;
-      const validated = aiResult.ok ? validateEventDraft(aiResult.json, allowedPersonIds, allowedOrgIds) : null;
+      const validated = aiResult.ok ? validateEventDraft(aiResult.json, allowedPersonIds, allowedOrgIds, cityId) : null;
       const repeatsLastEvent =
         validated != null && validated.related_organization_ids.some((id) => lastEventOrgIds.has(id));
       if (validated && !repeatsLastEvent) {
@@ -148,19 +155,73 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       newsDraft = getFallback().news;
     }
 
-    // AIが提案した新規人物をDBへ作成する。
+    // AIが提案した新規人物をDBへ作成する。生年月日・生まれはAIには書かせず、
+    // 年齢・所在都市から機械的に算出する（キャラクター作成の全項目を必ず埋める）。
     const createdPeopleIds: number[] = [];
     const createdPeopleNames: string[] = [];
     for (const np of eventDraft.new_people) {
       const insertResult = await env.DB.prepare(
-        `INSERT INTO people (name, name_kana, age, gender, city_id, occupation, organization_id, money, status, origin, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'alive', 'news_generated', ?, ?)`
+        `INSERT INTO people
+           (name, name_kana, age, gender, city_id, occupation, organization_id, money, status, origin,
+            job_title, annual_income, birth_date, birthplace, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'alive', 'news_generated', ?, ?, ?, ?, ?, ?)`
       )
-        .bind(np.name, np.name_kana, np.age, np.gender, cityId, np.occupation, np.organization_id, now(), now())
+        .bind(
+          np.name,
+          np.name_kana,
+          np.age,
+          np.gender,
+          cityId,
+          np.occupation,
+          np.organization_id,
+          np.job_title,
+          np.annual_income,
+          computeBirthDateFromAge(targetDate, np.age),
+          cityName,
+          now(),
+          now()
+        )
         .run();
       const newId = insertResult.meta.last_row_id as number;
       createdPeopleIds.push(newId);
       createdPeopleNames.push(np.name);
+    }
+
+    // AIが提案した新規組織・施設をDBへ作成する（同一都市のみ、validateEventDraftで検証済み）。
+    const createdOrgIds: number[] = [];
+    const createdOrgNames: string[] = [];
+    const zonePoints = [
+      ...organizations.filter((o) => o.map_x != null && o.map_y != null).map((o) => ({ x: o.map_x as number, y: o.map_y as number })),
+      ...facilities.map((f) => ({ x: f.map_x, y: f.map_y })),
+    ];
+    for (const no of eventDraft.new_organizations) {
+      const pos = assignZonePositionForCity(city, zonePoints, zonePoints);
+      const newOrgId = await createOrganization(env, {
+        name: no.name,
+        kind: no.kind,
+        city_id: cityId,
+        description: null,
+        industry: no.industry,
+        employee_scale: null,
+        founded_year: null,
+        map_x: pos.x,
+        map_y: pos.y,
+      });
+      zonePoints.push(pos);
+      createdOrgIds.push(newOrgId);
+      createdOrgNames.push(no.name);
+    }
+    for (const nf of eventDraft.new_facilities) {
+      const pos = assignZonePositionForCity(city, zonePoints, zonePoints);
+      await createFacility(env, {
+        name: nf.name,
+        kind: nf.kind,
+        city_id: cityId,
+        description: null,
+        map_x: pos.x,
+        map_y: pos.y,
+      });
+      zonePoints.push(pos);
     }
 
     const relatedPeopleIds = [...eventDraft.related_person_ids, ...createdPeopleIds];
@@ -168,9 +229,11 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       ...people.filter((p) => eventDraft.related_person_ids.includes(p.id)).map((p) => p.name),
       ...createdPeopleNames,
     ];
-    const relatedOrgNames = organizations
-      .filter((o) => eventDraft.related_organization_ids.includes(o.id))
-      .map((o) => o.name);
+    const relatedOrgIds = [...eventDraft.related_organization_ids, ...createdOrgIds];
+    const relatedOrgNames = [
+      ...organizations.filter((o) => eventDraft.related_organization_ids.includes(o.id)).map((o) => o.name),
+      ...createdOrgNames,
+    ];
 
     // 世界状態への影響を適用する。
     const appliedImpact = await applyStateChanges(env, eventDraft.state_changes, targetDate, relatedPeopleIds);
@@ -186,7 +249,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
         .filter((c) => c.type === "organization_status" && c.value === "bankrupt")
         .map((c) => c.target_id)
     );
-    for (const orgId of eventDraft.related_organization_ids) {
+    for (const orgId of relatedOrgIds) {
       if (coveredOrgIds.has(orgId) || bankruptedOrgIds.has(orgId)) continue;
       const org = organizations.find((o) => o.id === orgId);
       if (!org || org.kind !== "company") continue;
@@ -214,7 +277,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
         eventDraft.summary,
         eventDraft.detail,
         JSON.stringify(relatedPeopleIds),
-        JSON.stringify(eventDraft.related_organization_ids),
+        JSON.stringify(relatedOrgIds),
         JSON.stringify(appliedImpact),
         source,
         now()
@@ -266,7 +329,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
         targetDate,
         newsDraft.category,
         JSON.stringify(relatedPeopleIds),
-        JSON.stringify(eventDraft.related_organization_ids),
+        JSON.stringify(relatedOrgIds),
         cityId,
         eventId,
         reporterId,

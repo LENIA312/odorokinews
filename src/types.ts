@@ -56,6 +56,18 @@ export interface OrganizationRow {
   updated_at: string;
 }
 
+export interface FacilityRow {
+  id: number;
+  name: string;
+  kind: string;
+  city_id: number;
+  description: string | null;
+  map_x: number;
+  map_y: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PersonRow {
   id: number;
   name: string;

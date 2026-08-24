@@ -10,6 +10,7 @@ export interface EventHints {
 
 export interface WorldContext {
   worldName: string;
+  cityId: number;
   cityName: string;
   cityDescription: string;
   population: number | null;
@@ -31,6 +32,12 @@ const EVENT_SYSTEM_PROMPT = `あなたは架空世界シミュレーションの
 - 出力は指定されたJSON形式のみ。説明文やMarkdownのコードフェンスは一切付けない。
 - related_people / related_organizations は、必ず与えられたID一覧の中から選ぶこと。存在しないIDを作ってはいけない。
 - どうしても新しい人物が必要な場合のみ related_people に {"new": {...}} を1〜2件まで追加してよい。
+  その場合、name/name_kana/age/gender/occupation に加えて job_title（役職。無ければ null）と
+  annual_income（年収。学生や子供など収入が無い場合は0）も必ず埋めること。空欄のまま残さない。
+- 出来事の内容として自然な場合のみ、new_organizations（新しい企業・組織）や new_facilities
+  （新しい住宅街・公園・商店街などの施設）を1件程度追加してよい（例: 新しい店がオープンした、
+  新しい公園が完成した、新しい会社が設立された、など）。無理に追加する必要はない。
+  追加する場合、city_id には必ず下記の「この出来事の舞台となる都市のID」を指定すること。
 - 都市名・人口・国名などの固定設定を変更する内容にしないこと。
 - 過度に暴力的・グロテスクな内容は避け、報道可能な範囲の出来事にすること。
 - 直近のイベントと似た内容の繰り返しは避けること。
@@ -99,6 +106,7 @@ ${mustPeopleNames.length ? `- 必ず登場させる人物: ${mustPeopleNames.joi
 
   const user = `# 世界設定
 国名: ${ctx.worldName}
+この出来事の舞台となる都市のID: ${ctx.cityId}
 都市: ${ctx.cityName}（人口: ${ctx.population ?? "不明"}）
 都市の説明: ${ctx.cityDescription}
 生成対象の世界日付: ${ctx.targetDate}
@@ -120,8 +128,10 @@ ${lastEventOrgNames.length ? `\n直前のイベントは${lastEventOrgNames.join
   "summary": "string（1文の事実サマリー、40文字程度）",
   "detail": "string（2〜4文の詳細説明）",
   "involves_magic": true または false,
-  "related_people": [ {"id": 数値} または {"new": {"name": "string", "name_kana": "string（nameのひらがな読み。例: 田中太郎→たなか たろう）", "age": 数値, "gender": "string", "occupation": "string", "organization_id": 数値またはnull}} ],
+  "related_people": [ {"id": 数値} または {"new": {"name": "string", "name_kana": "string（nameのひらがな読み。例: 田中太郎→たなか たろう）", "age": 数値, "gender": "string", "occupation": "string", "organization_id": 数値またはnull, "job_title": "stringまたはnull（役職）", "annual_income": 数値（年収、収入が無ければ0）}} ],
   "related_organizations": [ 上記一覧に存在するid の配列 ],
+  "new_organizations": [ {"name": "string", "kind": "company|government|school|other", "industry": "stringまたはnull", "city_id": ${ctx.cityId}} ]（任意、無ければ空配列）,
+  "new_facilities": [ {"name": "string", "kind": "residential|university|park|shopping_street|other", "city_id": ${ctx.cityId}} ]（任意、無ければ空配列）,
   "state_changes": [
     {"type": "person_status", "target_id": 数値, "value": "${PERSON_STATUSES.join("|")}"},
     {"type": "organization_status", "target_id": 数値, "value": "${ORG_STATUSES.join("|")}"},

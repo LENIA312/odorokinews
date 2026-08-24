@@ -4,8 +4,10 @@ import type { Zone } from "./mapZones";
 const ZONE_COLOR: Record<Zone["kind"], string> = {
   org: "#5b7fd9",
   residential: "#c98a5c",
+  university: "#8a8770",
+  park: "#5fa876",
+  shopping_street: "#5fa876",
   other: "#5fa876",
-  city: "#9b5fb0",
 };
 
 function escapeXml(s: string): string {
@@ -32,25 +34,6 @@ function zoneIcon(z: Zone): string {
     );
   }
 
-  if (z.kind === "city") {
-    const draft = z.status === "draft";
-    const op = draft ? "0.5" : "0.92";
-    return (
-      '<ellipse cx="0" cy="14" rx="42" ry="12" fill="' + color + '" opacity="0.16"></ellipse>' +
-      '<polygon points="-20,-2 -10,-17 0,-2" fill="' + color + '" opacity="' + op + '"></polygon>' +
-      '<polygon points="0,-2 10,-21 20,-2" fill="' + color + '" opacity="' + op + '"></polygon>' +
-      '<polygon points="18,-2 27,-13 36,-2" fill="' + color + '" opacity="' + op + '"></polygon>' +
-      '<rect x="-24" y="-2" width="60" height="17" rx="1.5" fill="' + color + '" opacity="' + op + '"></rect>' +
-      '<rect x="-18" y="4" width="6" height="6" fill="#eef2fb" opacity="0.85"></rect>' +
-      '<rect x="-4" y="4" width="6" height="6" fill="#eef2fb" opacity="0.85"></rect>' +
-      '<rect x="10" y="4" width="6" height="6" fill="#eef2fb" opacity="0.85"></rect>' +
-      '<rect x="24" y="4" width="6" height="6" fill="#eef2fb" opacity="0.85"></rect>' +
-      (draft
-        ? '<text x="6" y="-26" text-anchor="middle" font-size="9" fill="#8a7f5f">準備中（未使用）</text>'
-        : "")
-    );
-  }
-
   if (z.kind === "residential") {
     var house = function (dx: number, dy: number, scale: number, c: string) {
       return (
@@ -69,7 +52,7 @@ function zoneIcon(z: Zone): string {
     );
   }
 
-  if (z.id === "university") {
+  if (z.kind === "university") {
     return (
       '<rect x="-16" y="-6" width="32" height="21" fill="#8a8770"></rect>' +
       '<polygon points="-19,-6 0,-18 19,-6" fill="#6f6c58"></polygon>' +
@@ -81,7 +64,7 @@ function zoneIcon(z: Zone): string {
     );
   }
 
-  if (z.id === "park") {
+  if (z.kind === "park") {
     var tree = function (dx: number, dy: number, r: number) {
       return (
         '<g transform="translate(' + dx + "," + dy + ')">' +
@@ -231,18 +214,19 @@ function roadNetwork(zoneById: Record<string, Zone>, edges: [string, string][]):
 function zoneMarkers(zones: Zone[]): string {
   var markers = zones
     .map(function (z) {
-      var isCity = z.kind === "city";
-      var scale = isCity ? 1.7 : 1.25;
-      var ringR = isCity ? 34 : 22;
-      var spotR = isCity ? 40 : 27;
+      var isDraft = z.status === "draft";
       return (
-        '<g id="zone-' + z.id + '" transform="translate(' + z.x + "," + z.y + ") scale(" + scale + ')">' +
-        '<circle class="status-ring" r="' + ringR + '" fill="none" stroke-width="2.6" opacity="0"></circle>' +
-        '<circle class="spotlight-ring" r="' + spotR + '" fill="none" stroke-width="2.2" opacity="0"></circle>' +
+        '<g id="zone-' + z.id + '" transform="translate(' + z.x + "," + z.y + ') scale(1.25)">' +
+        '<circle class="status-ring" r="22" fill="none" stroke-width="2.6" opacity="0"></circle>' +
+        '<circle class="spotlight-ring" r="27" fill="none" stroke-width="2.2" opacity="0"></circle>' +
         zoneIcon(z) +
-        '<text x="6" y="' + (isCity ? 34 : 28) + '" text-anchor="middle" font-size="' + (isCity ? 12 : 10) + '" font-weight="' + (isCity ? 700 : 400) + '" fill="#4a473c" font-family="Hiragino Sans, Noto Sans JP, sans-serif">' +
+        '<text x="0" y="28" text-anchor="middle" font-size="10" fill="#4a473c" font-family="Hiragino Sans, Noto Sans JP, sans-serif">' +
         escapeXml(z.label) +
-        "</text></g>"
+        "</text>" +
+        (isDraft
+          ? '<text x="0" y="-26" text-anchor="middle" font-size="8" fill="#8a7f5f">準備中の都市</text>'
+          : "") +
+        "</g>"
       );
     })
     .join("");

@@ -67,6 +67,11 @@ export type OrgStatus = (typeof ORG_STATUSES)[number];
 export const ORG_KINDS = ["company", "government", "school", "other"] as const;
 export type OrgKind = (typeof ORG_KINDS)[number];
 
+// 施設(雇用主ではない公共・生活系のゾーン)の種別。住宅街・大学・公園・商店街は
+// 従来mapZones.tsにハードコードしていたダイナン市の固定ゾーンをこのkindへ移行したもの。
+export const FACILITY_KINDS = ["residential", "university", "park", "shopping_street", "other"] as const;
+export type FacilityKind = (typeof FACILITY_KINDS)[number];
+
 // draft: 管理画面で作成済みだが、まだ生成対象に含めない都市。
 // active: 今後のシミュレーション生成で使用される都市。
 export const CITY_STATUSES = ["active", "draft"] as const;

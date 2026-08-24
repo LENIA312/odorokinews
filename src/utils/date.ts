@@ -20,6 +20,20 @@ export function formatWorldDateWithWeekdayJa(dateStr: string): string {
   return `${y}年${m}月${d}日（${weekday}）`;
 }
 
+/**
+ * 生年月日を機械的に算出する: 基準となる世界暦日付から年齢分をさかのぼり、
+ * さらに0〜299日のランダムなずれを与える（全員が同じ月日にならないように）。
+ * AIが新規作成する人物の生年月日は、この関数で算出しAIには書かせない
+ * （scripts/backfill_life_details.sql の既存人物向けロジックと同じ考え方）。
+ */
+export function computeBirthDateFromAge(referenceDate: string, age: number | null): string | null {
+  if (age == null) return null;
+  const [y, m, d] = referenceDate.split("-").map(Number);
+  const base = new Date(Date.UTC(y - age, m - 1, d));
+  base.setUTCDate(base.getUTCDate() - Math.floor(Math.random() * 300));
+  return base.toISOString().slice(0, 10);
+}
+
 export function formatDateTimeJa(isoStr: string): string {
   const dt = new Date(isoStr);
   if (Number.isNaN(dt.getTime())) return isoStr;

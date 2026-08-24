@@ -60,6 +60,10 @@ GitHubリポジトリ: `https://github.com/LENIA312/odorokinews`（public）。
   以後はニュース配信のたびに1日ずつ進む。
 - サイト上では「シミュレーションである」ことを明記しない方針（ユーザー指示）。マップの説明文・時計の
   ラベルなどから「演出用」「シミュレーション」といった単語は意図的に排除している。
+- 全ページ共通のヘッダー右上に「モーゼン・クロニクルとは」ボタンがあり、クリックするとAI記者による
+  取材・街や人物が日々成長していく仕組みを、上記の「シミュレーション」という語を避けつつ分かりやすく
+  紹介するモーダルが開く（`layout.ts`の`ABOUT_SCRIPT`/`ABOUT_MODAL_BODY`）。**初回アクセス時は
+  localStorage(`mosen_chronicle_about_seen`)に記録が無ければ自動的に開く**（強制表示は初回のみ）。
 
 ---
 
@@ -107,13 +111,19 @@ src/
     components.ts                 小さな共通コンポーネント（leadFromBody等）
   utils/
     html.ts                      `html`タグ付きテンプレート（自動エスケープ）と`raw()`
-    date.ts                      世界日付のフォーマット関数
+    date.ts                      世界日付のフォーマット関数、`computeBirthDateFromAge`（生年月日の機械的算出）
     kana.ts                      人物一覧の50音インデックス判定
-migrations/0001〜0006_*.sql   D1スキーマ（マイグレーション、詳細は4章）
+migrations/0001〜0009_*.sql   D1スキーマ（マイグレーション、詳細は4章）
 scripts/
   generate_people.mjs           既存の企業・都市に紐づく人物を大量生成するスクリプト（任意実行）
   backfill_kana.mjs             既存人物へのふりがな一括付与（一度きり使用）
   reset_to_1900.sql             世界暦とニュースを1900-01-01からやり直すためのリセットSQL
+  backfill_life_details.sql     既存人物へ生年月日・年収・生まれを一括付与（一度きり使用、冪等）
+  fix_birth_date_reference.sql  上記の実行時に`wrangler d1 execute`がworld.current_dateを
+                                  古いキャッシュ値で読んでしまった事故の訂正用（12章末の注意点を参照）
+  backfill_existing_city_facilities.sql
+                                  施設機能の追加前に作成済みだった都市へ、新規都市作成時と同じ
+                                  住宅街+商店街を一度だけ補完
 seed.sql / seed_more_people.sql D1への初期データ投入（国・都市・企業・人物）
 wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron、vars）
 ```
@@ -149,7 +159,11 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron
 | description | TEXT? | 0001 | |
 | industries | TEXT? | 0001 | JSON配列文字列（例 `["漁業","観光"]`） |
 | status | TEXT | 0005 | `active` \| `draft`。Activeな都市のみ日次シミュレーションの舞台候補になる |
-| map_x / map_y | REAL? | 0005 | 地図上のランドマーク座標（`id=1`以外の都市のみ地図に描画される。詳細は7章） |
+| map_x / map_y | REAL? | 0005 | **地図上に何かを描画するための座標ではない**。その都市に属する組織・施設を
+  新規作成する際の「拠点」基準点（`assignZonePositionForCity`が使う）。都市そのものは
+  単一のマーカーとしては地図に描画されず、その都市に属する施設・組織の集合として表現される
+  （7章。旧実装ではこの座標に単一のランドマークを描画していたが、「新都市のランドマークが
+  あればよいものではない」という指摘を受けて廃止した） |
 | created_at / updated_at | TEXT | 0001 | |
 
 #### `organizations`
@@ -159,7 +173,7 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron
 | id | INTEGER PK | 0001 | |
 | name | TEXT | 0001 | |
 | kind | TEXT | 0001 | `ORG_KINDS`: company / government / school / other |
-| city_id | INTEGER? FK→cities | 0001 | 所属都市。企業作成時に指定可能（デフォルト1） |
+| city_id | INTEGER? FK→cities | 0001 | 所属都市。企業作成時に指定可能（デフォルト1）。管理画面・イベントAI(`new_organizations`)どちらから作成時も指定される |
 | description | TEXT? | 0001 | |
 | status | TEXT | 0001 | `ORG_STATUSES`: active / expanding / under_investigation / recovering / celebrating / bankrupt |
 | industry | TEXT? | 0004 | 業種（例: 製造・造船） |
@@ -170,6 +184,28 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron
 
 企業が `bankrupt` になると、そこに勤めていた `people.organization_id` は自動的に `NULL` に戻る
 （管理画面からの手動変更・AIのstate_changes経由のどちらでも同じ挙動。`clearPeopleOrganization` / `applyStateChanges`）。
+
+#### `facilities`（0009で新規追加）
+
+雇用主ではない、公共・生活系のゾーン（住宅街・大学・公園・商店街など）。以前は`mapZones.ts`に
+`FIXED_ZONES`としてダイナン市専用にハードコードされていたが、「現在存在している住宅街などは
+施設に分類する」という指示を受けてDBテーブル化し、都市ごとに持たせられるようにした。
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| id | INTEGER PK | |
+| name | TEXT | |
+| kind | TEXT | `FACILITY_KINDS`: residential / university / park / shopping_street / other |
+| city_id | INTEGER NOT NULL FK→cities | 所属都市。管理画面から指定可能（作成後の変更は不可） |
+| description | TEXT? | |
+| map_x / map_y | REAL NOT NULL | 地図上の座標。新規作成時は`assignZonePositionForCity`で自動配置 |
+| created_at / updated_at | TEXT | |
+
+**都市を新規作成すると、住宅街1件+商店街1件が自動的に生成される**（`POST /api/admin/cities`の
+ハンドラ内、8.3節）。これにより「新都市の各施設単位で表示されるべき」という要件を満たし、
+単一のランドマークで終わらない街並みが最初から用意される。organizationsとは違いDELETE用の
+管理APIは無い（人物の`homeZone`割り当てが特定の施設IDを参照しうるため、削除で参照が壊れることを
+避けている。8.3節参照）。
 
 #### `people`
 
@@ -186,10 +222,13 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron
 | status | TEXT | 0001 | `PERSON_STATUSES`: alive / sick / injured / hospitalized / deceased / celebrating / under_investigation |
 | origin | TEXT | 0001 | `simulation`(seed投入) / `news_generated`(AIが記事内で新規作成) / `admin_manual`(管理画面から追加。出産記録経由の新生児もこれ) |
 | bio | TEXT? | 0001 | |
-| annual_income | INTEGER? | 0007 | 年収。AIが新規作成する人物には付与されず（`null`のまま）、管理画面から後で設定する想定 |
-| job_title | TEXT? | 0007 | 役職（例: 課長、代表取締役）。`occupation`（職業）とは別軸 |
-| birth_date | TEXT? | 0007 | 生年月日。世界暦 `YYYY-MM-DD`。`age`から自動算出はしない（別々に管理する静的な値） |
-| birthplace | TEXT? | 0007 | 生まれ（自由記述）。出産記録機能を使うと母親の所在都市名が自動で入る |
+| annual_income | INTEGER? | 0007 | 年収。イベントAIが`new_people`で新規作成する人物についても必ず埋めるよう
+  プロンプトで指示している（6.2節）。0〜3000万円の範囲で検証（`validate.ts`の`MAX_ANNUAL_INCOME`） |
+| job_title | TEXT? | 0007 | 役職（例: 課長、代表取締役）。`occupation`（職業）とは別軸。AI新規作成人物にも書かせる |
+| birth_date | TEXT? | 0007 | 生年月日。世界暦 `YYYY-MM-DD`。**AIには書かせず**、`computeBirthDateFromAge`
+  （`utils/date.ts`）で「対象日 − age年 − ランダム0〜299日」として機械的に算出する（AIの日付計算ミスを避けるため） |
+| birthplace | TEXT? | 0007 | 生まれ（自由記述）。新規作成時はその人物が作られた都市名を機械的に設定する。
+  出産記録機能を使うと母親の所在都市名が入る |
 | created_at / updated_at | TEXT | 0001 | |
 
 #### `relationships`
@@ -286,8 +325,17 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 | `0006_weather.sql` | `world.weather`（デフォルト `'晴れ'`） |
 | `0007_person_life_details.sql` | `people.annual_income/job_title/birth_date/birthplace` |
 | `0008_occupations_and_reporters.sql` | `occupation_types`テーブル新規作成+初期データ約70件、記者2人をpeopleへ追加投入、`news.reporter_person_id` |
+| `0009_facilities.sql` | `facilities`テーブル新規作成。ダイナン市の旧`FIXED_ZONES`(大学・住宅街×3・公園・商店街)を投入 |
 
 新しいマイグレーションを追加したら、このテーブルと4.1節の該当テーブルの説明を両方更新すること。
+
+> **運用上の注意（`wrangler d1 execute --remote`のキャッシュ動作）**: 0009適用後の実データ移行作業で、
+> `wrangler d1 execute --remote --file`内のSELECTサブクエリが`world.current_date`の**古い値**
+> （初回seed時点の値）を読んでしまい、生年月日の一括計算を誤らせる事故が実際に発生した
+> （デプロイ済みWorker自身の`/api/health`は常に正しい最新値を返していたのに、CLI側のクエリだけ
+> 古い値を返し続けた）。以後、DB操作スクリプトで「今の状態」に依存する値を計算する場合は、
+> **SQLのサブクエリに頼らず、事前にAPI等で確認した値をリテラルとしてSQLに埋め込む**こと。
+> `scripts/fix_birth_date_reference.sql`が実際の訂正に使ったパターン。
 
 ### 4.3 主要な定数（`src/constants.ts`）
 
@@ -299,6 +347,7 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 | `ORG_STATUSES` | active, expanding, under_investigation, recovering, celebrating, bankrupt |
 | `ORG_KINDS` | company, government, school, other |
 | `CITY_STATUSES` | active, draft |
+| `FACILITY_KINDS` | residential, university, park, shopping_street, other |
 | `WEATHER_CONDITIONS` | 晴れ, 曇り, 雨, 雷雨, 霧, 雪, 強風, 魔力嵐 |
 | `RELATION_TYPES` | family_parent, family_child, family_sibling, spouse, colleague, friend |
 | `RELATION_TYPE_LABEL` | 上記の日本語ラベル（親/子/兄弟姉妹/配偶者/同僚/友人） |
@@ -322,22 +371,26 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 3. simulation_runs に 'running' で1行INSERT
 4. Active な都市からランダムに1件選択（listActiveCities）
    - 該当なしなら city_id=1（ダイナン市）にフォールバック
-5. その都市に属する組織・人物・直近5件のイベントを取得
+5. その都市に属する組織・施設・人物・直近5件のイベントを取得
 6. env.AI があり、AI呼び出し上限(AI_MAX_CALLS_PER_RUN)内なら:
-   a. buildEventPrompt() でプロンプトを組み立て、イベントAIを呼ぶ
+   a. buildEventPrompt() でプロンプトを組み立て、イベントAIを呼ぶ（都市IDも渡す。6.2節）
    b. validateEventDraft() で検証。直前イベントと同じ組織が主役なら機械的に却下しフォールバックへ
    c. 検証OKなら source='ai'、NGならフォールバックテンプレートへ
    AIが無ければ最初からフォールバック
-7. イベントAIが提案した新規人物(new_people)をpeopleへINSERT
-8. state_changes を applyStateChanges() で実際にDBへ適用（6章・stateChanges.ts参照）
-9. AIが株価変動を提案しなかった上場企業には±5%の自動微変動を与える
-   （「ニュースがあったのに経済が全く動かない」ズレを防ぐ、daily simulation限定の挙動）
-10. events テーブルへ1行INSERT
-11. source==='ai'なら記者AIを呼び出し記事を生成、buildNewsPrompt()。
+7. イベントAIが提案した新規人物(new_people)をpeopleへINSERT。生年月日・生まれはAIには書かせず、
+   `computeBirthDateFromAge`（年齢から機械的に算出）とその都市名で必ず埋める（1章・6.2節参照）
+8. イベントAIが提案した新規組織(new_organizations)・新規施設(new_facilities)をDBへINSERT
+   （同一都市のみ許可。`assignZonePositionForCity`で自動配置し、新規組織は関係組織としても扱う）
+9. state_changes を applyStateChanges() で実際にDBへ適用（6章・stateChanges.ts参照）
+10. AIが株価変動を提案しなかった上場企業には±5%の自動微変動を与える
+    （「ニュースがあったのに経済が全く動かない」ズレを防ぐ、daily simulation限定の挙動）
+11. events テーブルへ1行INSERT
+12. source==='ai'なら記者AIを呼び出し記事を生成、buildNewsPrompt()。
     失敗時やfallback経路では、イベントの事実だけから機械的に記事文面を組み立てる
-12. news テーブルへ1行INSERT、events.news_id を更新、timelineへ1行追加
-13. world.current_date / last_published_at を更新
-14. simulation_runs を 'success' に更新（例外時は'failed'+エラーメッセージ）
+13. その都市に紐づく記者(occupation='記者')からランダムに1人選び news.reporter_person_id に設定
+14. news テーブルへ1行INSERT、events.news_id を更新、timelineへ1行追加
+15. world.current_date / last_published_at を更新
+16. simulation_runs を 'success' に更新（例外時は'failed'+エラーメッセージ）
 ```
 
 ### 5.2 Cron/スケジューリングの仕組み（`schedule.ts`）
@@ -359,9 +412,11 @@ DB問い合わせは直接の関係のみで祖父母・孫までは辿らない
 直近イベント一覧（`listRecentEvents`）だけは都市を問わず全体から取得している（重複回避・世界全体の
 文脈提示のため）。
 
-新しい都市をActiveにしただけでは組織・人物は自動生成されない。管理画面から手動で企業・人物を
-追加するか、AIが記事内で新規人物(new_people)を作るのを待つ形になる（7章のマップ自動配置と合わせて
-「まず空の都市として地図に現れ、徐々に中身が増えていく」という体験になる）。
+都市を新規作成すると住宅街+商店街の施設が自動で用意される（7.2節）ため、Activeにした時点で
+最低限の街並みはすでに存在する。それ以外の組織・人物は自動生成されないため、管理画面から手動で
+追加するか、AIが記事内で new_people/new_organizations/new_facilities を作るのを待つ形になる
+（7章のマップ自動配置と合わせて「複数の施設を伴って地図に現れ、徐々に中身が増えていく」という
+体験になる。単一のランドマークだけで終わらせない、という方針転換については7章冒頭を参照）。
 
 ### 5.4 state_changes の適用ルール（`stateChanges.ts` / `validate.ts`）
 
@@ -414,7 +469,16 @@ AIが使えない/失敗した場合に必ず動く、テンプレートベー�
 システムプロンプトの要点:
 - 世界観（魔法・ファンタジー要素が住民にとって日常）の説明
 - `related_people`/`related_organizations` は必ず与えられたID一覧から選ぶ（存在しないIDの捏造禁止）
-- 新規人物は `related_people` に `{"new": {...}}` として1〜2件まで追加可
+- 新規人物は `related_people` に `{"new": {...}}` として1〜2件まで追加可。
+  `job_title`（役職・肩書、無ければ職業と同じでよい）・`annual_income`（年収、円単位の整数）を
+  **他の項目と同様に必ず埋める**よう明示的に指示（従来はnullのまま許容していたが、
+  「今後AIにより新たに作成されるキャラクターは項目をすべて埋める」という方針転換により追加）。
+  `birth_date`/`birthplace`はAIには生成させず、コード側で年齢から機械計算する（後述）。
+- **新規組織** (`new_organizations`) ・**新規施設** (`new_facilities`) をそれぞれ最大2件まで
+  提案可能。どちらも`city_id`は**このイベントの舞台となる都市のIDと完全一致する場合のみ**
+  受理される（ユーザープロンプトで明示的に渡すID。7章参照）。他都市のIDを指定した提案は
+  バリデーション側で黙って捨てる（AIが無関係な都市に組織・施設を作ってしまう事故を防ぐ
+  機械的なガード、プロンプト指示だけに頼らない）。
 - 固定設定（都市名・人口・国名）の変更禁止、過度に暴力的な内容禁止
 - **直近イベントとの重複禁止**を明示（さらにコード側でも直前1件との組織重複を機械的にブロックする
   二重の安全策、詳細は5.1節）
@@ -422,13 +486,16 @@ AIが使えない/失敗した場合に必ず動く、テンプレートベー�
 
 ユーザープロンプトに含まれる情報:
 - 世界設定（国名・都市名・人口・都市説明・生成対象日付・現在の天候）
+- **この出来事の舞台となる都市のID**（`WorldContext.cityId`。new_organizations/new_facilitiesの
+  city_id制約の基準になる。5.3節の都市選択ロジックで決まった都市のIDがそのまま渡る）
 - **管理者からの指定（任意）**: 管理画面のAI補助作成機能から「必ず登場させる人物/組織」
   「ジャンル指定」「キーワード」を渡された場合のみ、専用セクションとして追記される（`EventHints`型）
 - 参照可能な企業・組織一覧（id/name/kind/status）
 - 参照可能な人物一覧（最大24件抜粋、id/name/age/occupation）
 - 直近イベント一覧（新しい順、内容を含む）+ 直前イベントの主役組織名を明示して「別テーマにすること」と指示
-- 出力JSONスキーマ（`event_type`, `summary`, `detail`, `involves_magic`, `related_people`,
-  `related_organizations`, `state_changes`）
+- 出力JSONスキーマ（`event_type`, `summary`, `detail`, `involves_magic`, `related_people`
+  （newの場合`job_title`/`annual_income`を含む）, `related_organizations`, `new_organizations`,
+  `new_facilities`, `state_changes`）
 
 管理画面からの「必ず登場させる人物/組織」指定は、**AIが出力に含め忘れてもコード側で機械的に
 `related_people`/`related_organizations` へ補完する**（5.3節・9章参照。プロンプト指示だけに頼らない）。
@@ -475,47 +542,84 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 `/map` ページと `GET /api/map/people`（人物の現在位置をポーリング取得するJSON API）で構成。
 実座標データを持たない「模式図」で、DBの実データから毎リクエスト動的に組み立てる。
 
+**設計方針の転換（2026-08-25）**: 従来は新都市＝マップ上の単一ランドマーク（`kind: "city"`の
+1個のマーカー）として表現していたが、これは「最初にあったマップ全体が実は1都市『ダイナン』の
+中身だった」ことと整合しない。新都市もダイナン市と同様に、**複数の施設・組織が個別のゾーンとして
+並ぶ**形で表現するよう全面的に作り直した（`mapZones.ts`）。`kind: "city"`というゾーン種別、
+`FIXED_ZONES`/`FIXED_EDGES`によるダイナン市の座標ハードコードは廃止。
+
 ### 7.1 ゾーンの種類（`mapZones.ts`の`Zone`型）
 
-| kind | 内容 |
-|---|---|
-| `org` | 組織（`organizations`テーブルの`map_x`/`map_y`から動的に構築） |
-| `city` | ダイナン市(id=1)以外の都市のランドマーク（`cities`テーブルの`map_x`/`map_y`から構築） |
-| `residential` / `other` | ダイナン市の固定ゾーン（`FIXED_ZONES`、大学・住宅街3箇所・商店街・公園、座標ハードコード） |
+ゾーンは2つのDBテーブルから動的に構築する。どちらも`city_id`を持ち、都市ごとに視覚的な
+まとまりを作る（7.2節）。
+
+| kind | 由来テーブル | 内容 |
+|---|---|---|
+| `org` | `organizations` | 企業・行政・学校など、雇用主として人物が勤務するゾーン |
+| `residential` | `facilities` | 住宅街（`assignPersonZones`の自宅候補） |
+| `university` | `facilities` | 大学 |
+| `park` | `facilities` | 公園 |
+| `shopping_street` | `facilities` | 商店街（`assignPersonZones`の勤務先候補の1つ） |
+| `other` | `facilities` | 上記に当てはまらない施設（未知の`kind`値のフォールバック先でもある） |
+
+ダイナン市(id=1)の既存6施設（大学1・住宅街3・商店街1・公園1）は、施設テーブル追加時に
+`migrations/0009_facilities.sql`で座標付きレコードとして投入した（従来のハードコード値を
+そのままDBへ移した形）。
 
 ### 7.2 自動拡張ロジック
 
-新しい組織・都市が追加されるたびに、地図は**既存の範囲の外側へ自動的に拡張**される:
+新しい組織・施設が追加されるたびに、地図は**既存の範囲の外側へ自動的に拡張**される:
 
 - `assignNewOrgPosition(existingPoints)`: 既存ゾーン群のバウンディングボックス外側へ、他ゾーンと
-  170px以上離れた位置を探索して配置。ダイナン市(id=1)所属の新規企業はこちらで**全既存ゾーン**を基準に配置。
-- `assignNewCityPosition(existingPoints)`: 都市は企業よりずっと大きい区画なので、最低500pxの余白・
-  400px以上の間隔を取って配置（`assignNewOrgPosition`と同じ探索アルゴリズムをスケールアップしたもの）。
-- ダイナン市以外の都市に企業を追加する場合は、**その都市自身のランドマーク座標**を基準点として
-  `assignNewOrgPosition([cityAnchor, ...同都市の既存企業])` を呼ぶ（ダイナン市のクラスタとは
-  混ざらず、その都市の近くにまとまる）。
+  170px以上離れた位置を探索して配置。
+- `assignNewCityPosition(existingPoints)`: 新都市作成時、その都市の**内部的な拠点座標**
+  （`cities.map_x/map_y`）を決めるためだけに使う。最低500pxの余白・400px以上の間隔を取る
+  （`assignNewOrgPosition`と同じ探索アルゴリズムをスケールアップしたもの）。**この座標自体は
+  地図上に何かを描画するためのものではない**（従来の単一ランドマーク方式の名残りだが、
+  新規ゾーンの配置基準点としてのみ使う内部値として残した）。
+- `assignZonePositionForCity(city, allZonePoints, sameCityZonePoints)`: 組織・施設の座標を
+  決める共通ロジック。ダイナン市(id=1)は`assignNewOrgPosition(allZonePoints)`で**全既存ゾーン**を
+  基準に配置。それ以外の都市は、その都市の拠点座標(`cities.map_x/map_y`)と**同都市の既存ゾーン**
+  だけを基準に`assignNewOrgPosition([cityAnchor, ...sameCityZonePoints])`を呼ぶ（他都市の
+  クラスタとは混ざらず、その都市の近くにまとまって広がっていく）。
+- 都市を新規作成すると、この`assignZonePositionForCity`を使って**住宅街+商店街の施設2件が
+  自動生成される**（8.3節）。「都市を作ったら地図上にランドマーク1個だけが増える」のではなく、
+  最初から複数施設を伴った街並みとして現れる。
 
-道路網（`buildAllEdges`）も同様に、創業時からの6組織+固定ゾーンは`FIXED_EDGES`で手動接続、
-それ以外の組織・都市は最近傍ゾーンへ自動で1本道をつなぐ（`nearestZoneId`）。
+道路網（`buildAllEdges`）は、渡されたゾーン一覧（施設→組織の順）を先頭から処理し、
+各ゾーンをそれまでに配置済みのゾーンのうち最も近い1つへ自動的に1本道でつなぐ
+（`nearestZoneId`による最近傍接続のみ。従来あった`FIXED_EDGES`による手動接続リストは廃止）。
+都市ごとのゾーン群は座標的に離れているため、この単純なロジックだけで都市内は密な道路網、
+都市間は1本の長い「幹線道路」でつながる自然なネットワークになる。
 
 表示範囲（SVGの`viewBox`）も `computeBounds()` でゾーン全体を包含するよう毎回動的に計算される
 （`map.ts`）。マップの拡大・縮小（ホイール/ピンチ）・ドラッグ/スワイプでのパンはSVG要素内に
 スコープされており、ページ全体のスクロール・拡大には影響しない。
 
+`draft`状態の都市に属するゾーンには、SSR時点（`/map`ルート、`index.ts`）で都市一覧から
+`draftCityIds`を計算し、`buildOrgZones`/`buildFacilityZones`へ渡すことで`status: "draft"`が
+付与される。該当ゾーンには「準備中の都市」という文字ラベルが地図上に静的に表示される
+（`map.ts`の`zoneMarkers()`）。都市がActive化されるとこのラベルは次回描画時に消える。
+
 ### 7.3 人物の表示
 
-`assignPersonZones()` が各人物へ「自宅ゾーン」「勤務先ゾーン」を割り当てる:
-- `organization_id` があればそこが勤務先
-- ダイナン市の住民で無所属なら、職業から大学/住宅街/商店街を推定
-- **ダイナン市以外の都市の住民**は、専用の住宅街ゾーンがまだ無いため、所属組織が無ければ
-  その都市自身のランドマークを自宅・勤務先の両方として扱う
+`assignPersonZones(people, facilities)` が各人物へ「自宅ゾーン」「勤務先ゾーン」を割り当てる。
+都市ごとに施設一覧をグルーピングし(`facilitiesByCity`)、人物IDベースのハッシュで同一都市内の
+候補から決定論的に1つ選ぶ:
+
+- **自宅**: 所属都市の`residential`施設をハッシュ選択（無ければ同都市の任意の施設にフォールバック）
+- **勤務先**: `organization_id`があればそこ。無ければ職業から`university`（学生）/
+  `shopping_street`（それ以外、主婦・主夫・無職は自宅扱い）をハッシュ選択し、該当施設が
+  無ければ自宅ゾーンにフォールバック
+- 所属都市にまだ施設が1つも無い場合（通常到達しない）は`"none"`という存在しないゾーンIDのまま
+  返し、クライアント側`computePosition()`の「ゾーンが見つからない→マップ中心表示」フォールバックに委ねる
 
 クライアント側JS（`map.ts`のCLIENT_SCRIPT）が時刻に応じて自宅⇄勤務先を移動するアニメーションを
 描画する（`computePosition`、経路はゾーングラフ上のBFS最短経路）。`status`が`hospitalized`/`deceased`の
 人物は通勤ロジックより優先して病院/自宅に固定表示される。
 
-組織の`status`が`active`以外（bankrupt等）や都市が`draft`の場合、そのゾーンに色付きリング
-（`status-ring`）が表示される。直近ニュースに関係した組織には「注目」の光るリング
+組織の`status`が`active`以外（bankrupt等）や、組織・施設が`draft`都市に属する場合、そのゾーンに
+色付きリング（`status-ring`）が表示される。直近ニュースに関係した組織には「注目」の光るリング
 （`spotlight-ring`）も表示される。
 
 ### 7.4 人物検索・フォーカス・選択中インジケーター
@@ -549,7 +653,7 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 | ニュース | 記事の一覧・編集（タイトル/本文/カテゴリ/**担当記者**）・**削除**・**新規作成**（AI補助 / 完全手動の2方式、担当記者の指定可） |
 | 人物 | 職業タイプ管理、50音順一覧・**名前/職業/状態での絞込検索**・編集（役職/年収/生年月日/生まれ/**職業を選択式に変更**を含む全項目）・**新規作成**・**人間関係の追加/解除**・**出産の記録** |
 | 経済 | 物価指数の更新、企業一覧・編集・**新規作成**（所在都市を選択可）、株価の個別更新 |
-| 都市 | 都市の一覧・**新規作成**・編集（Active/Draftの切り替えを含む） |
+| 都市 | 都市の一覧・**新規作成**・編集（Active/Draftの切り替えを含む）、**施設の一覧・新規作成・編集**（都市で絞込） |
 | 設定 | 自動配信時刻の追加/削除/保存、**天候の変更** |
 
 ### 8.1 ニュース作成の2方式（詳細）
@@ -573,11 +677,20 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 参照は`NULL`に戻す（実行履歴自体は消さない）。**人物・組織・経済へ既に適用された影響は取り消さない**
 （記事の削除は「なかったことにする」機能ではない、という設計判断）。
 
-### 8.3 人物・企業・都市の新規作成に共通する挙動
+### 8.3 人物・企業・都市・施設の新規作成に共通する挙動
 
-- 企業作成: 所在都市を選択可能（デフォルト1=ダイナン市）。地図上の座標は7.2節のロジックで自動決定。
-- 都市作成: デフォルトは`draft`。地図上の座標も7.2節のロジックで自動決定。`id=1`を`draft`には
-  戻せない（サーバー側でガード）。
+- 企業作成: 所在都市を選択可能（デフォルト1=ダイナン市）。地図上の座標は7.2節の
+  `assignZonePositionForCity`（同都市の既存組織+施設を基準）で自動決定。
+- 都市作成: デフォルトは`draft`。地図上の内部拠点座標(`map_x`/`map_y`)は`assignNewCityPosition`で
+  自動決定。`id=1`を`draft`には戻せない（サーバー側でガード）。**作成と同時に住宅街+商店街の
+  施設2件が自動生成される**（`assignZonePositionForCity`を順に呼び、既に置いた施設も基準点に
+  含めていくため2件が近接して並ぶ）。単一のランドマークだけで終わらせず、最初から複数施設を
+  伴った街並みとして地図に現れる、という7章冒頭の方針転換に対応する変更。
+- 施設作成 (`POST /api/admin/facilities`): 名前・種別（`FACILITY_KINDS`）・所在都市・説明を指定。
+  座標は`assignZonePositionForCity`で自動決定（都市選択後、その都市に絞り込まれた一覧に反映）。
+  施設編集 (`PUT /api/admin/facilities/:id`) は名前・種別・説明のみ変更可（`city_id`は作成後
+  不変。都市をまたいで移動させるユースケースを現状想定していないため）。**削除エンドポイントは
+  意図的に用意していない**（施設が消えると`assignPersonZones`の自宅/勤務先参照が壊れるため）。
 - 人物作成: 所在都市を選択可能。`origin='admin_manual'`として記録。役職・年収・生年月日・生まれも
   作成時から指定可能（4.1節参照）。職業は8.5節の職業タイプから選択する（未登録の値も保持される）。
 
@@ -653,8 +766,11 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 | GET | `/api/admin/status` | 概要タブ用の状態取得（世界・実行履歴・最新ニュース） |
 | GET/PUT | `/api/admin/settings` | 自動配信時刻・天候の取得/自動配信時刻の更新 |
 | PUT | `/api/admin/weather` | 天候の更新 |
-| GET/POST | `/api/admin/cities` | 都市一覧取得 / 新規作成 |
+| GET/POST | `/api/admin/cities` | 都市一覧取得 / 新規作成（作成時に住宅街+商店街の施設を自動生成） |
 | PUT | `/api/admin/cities/:id` | 都市の編集（id=1はActive固定） |
+| GET | `/api/admin/facilities` | 施設一覧取得（`?cityId=`で都市絞込） |
+| POST | `/api/admin/facilities` | 施設の新規作成 |
+| PUT | `/api/admin/facilities/:id` | 施設の編集（名前/種別/説明のみ。削除エンドポイントなし） |
 | GET | `/api/admin/news-list` | ニュース一覧（簡易） |
 | GET/PUT/DELETE | `/api/admin/news/:id` | 記事の取得/編集/**削除** |
 | POST | `/api/admin/news/generate` | AI補助でのニュース新規作成 |
@@ -770,9 +886,12 @@ npm run tail
 ## 13. 既知の制約・スコープ外
 
 - Workers AIはローカル開発では実行不可（常にリモート）。
-- 新しく`active`にした都市は、組織・人物が自動生成されるわけではない（手動追加 or AIの
-  new_people頼み）。将来的に「都市ごとの初期シード生成」を作る余地がある。
+- 都市を新規作成すると住宅街+商店街の施設は自動生成されるが（7.2節・8.3節）、組織・人物は
+  自動生成されない（手動追加 or AIのnew_people/new_organizations頼み）。将来的に
+  「都市ごとのより充実した初期シード生成」を作る余地がある。
 - ニュース削除は世界状態のロールバックを行わない（意図的な設計、8.2節）。
+- 施設に削除エンドポイントが無い（意図的な設計、8.3節。`assignPersonZones`の自宅/勤務先参照が
+  壊れるため）。作成を間違えた場合は種別・説明の編集で対応する運用を想定している。
 - `relationships`（人間関係）は管理画面から手動で追加・出産記録経由で自動追加できるが、
   シミュレーション（AIのイベント生成）が自動で関係を追加する機能はまだ無い。
   家系図表示も直接の関係（親・子・兄弟姉妹・配偶者）のみで、祖父母・孫までは辿らない。
@@ -797,3 +916,18 @@ npm run tail
   追加/改名/削除できるようにし、人物編集フォームの職業欄をセレクトボックスに変更。管理画面の
   人物一覧が50件上限で全員表示されなかった不具合を修正（既定1000件）し、名前/職業/状態での
   絞込検索を追加。マップの選択中/検索した人物に、移動にも追従する常時表示の選択リングを追加。
+- 2026-08-25: ヘッダー右上に「モーゼン・クロニクルとは」ボタン+説明モーダルを追加（初回訪問時は
+  `localStorage`キー`mosen_chronicle_about_seen`未設定なら強制的に開く、1章参照）。既存住民
+  全員へ生年月日・生まれ・年収を一括バックフィル（`scripts/backfill_life_details.sql`。
+  途中`wrangler d1 execute --remote`のサブクエリが`world.current_date`を古いキャッシュ値で
+  読んでしまうバグに遭遇し、ライブAPIで取得した真値をリテラルで埋め込む
+  `scripts/fix_birth_date_reference.sql`で再修正、4.2節に教訓を記載）。今後AIが新規作成する
+  人物は`job_title`/`annual_income`を含む全項目を埋めるようプロンプトを変更し、`birth_date`/
+  `birthplace`は年齢からコード側で機械計算するよう統一（`computeBirthDateFromAge`、6.2節）。
+  「施設」概念を新設（`facilities`テーブル、`migrations/0009_facilities.sql`）し、ダイナン市の
+  既存6施設を投入。地図は単一ランドマーク方式を廃止し、都市ごとに複数の施設・組織ゾーンが
+  並ぶ方式へ全面刷新（`mapZones.ts`、7章）。都市新規作成時に住宅街+商店街を自動生成し、
+  管理画面「都市」タブに施設のCRUD（作成/編集、削除は意図的に無し）を追加（8.3節）。
+  イベントAIが`new_organizations`/`new_facilities`（都市IDが一致する場合のみ受理）を提案できる
+  ようプロンプト・バリデーションを拡張（6.2節・9章）。ユーザー自身が事前に作成していた都市
+  「ハノシダ」にも施設2件を遡及的に追加（`scripts/backfill_existing_city_facilities.sql`）。

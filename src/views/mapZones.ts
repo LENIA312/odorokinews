@@ -1,56 +1,29 @@
-// 「街の様子」ページ用の、ダイナン市のゾーン配置。
+// 「街の様子」ページ用の、都市ごとのゾーン配置。
 // 実在の地理データではなく、docs.mdの世界設定に基づく抽象的な模式図として扱う。
 //
-// 住宅街・大学・公園・商店街は固定ゾーンとしてここにハードコードする。
-// 企業・行政などの組織ゾーンは organizations テーブル(map_x/map_y)を基に
-// 動的に構築し、新しい企業が追加されるたびに地図が自動的に広がっていく。
+// 地図上のゾーンは2種類のDBテーブルから動的に構築する:
+// - facilities: 住宅街・大学・公園・商店街など、雇用主ではない公共・生活系のゾーン
+// - organizations: 企業・行政・学校など、雇用主として人物が勤務するゾーン
+// どちらも city_id を持ち、新しい都市が追加・Active化されるたびに、その都市専用の
+// ゾーン群として地図が自動的に広がっていく（単一のランドマークでは表現しない）。
 
-import type { CityRow, OrganizationRow, PersonRow } from "../types";
+import type { FacilityRow, OrganizationRow, PersonRow } from "../types";
 
 export interface Zone {
   id: string;
   label: string;
   x: number;
   y: number;
-  kind: "org" | "residential" | "other" | "city";
-  status?: string; // org/cityゾーンのみ。'active'以外なら地図上にリングを表示する。
+  kind: "org" | "residential" | "university" | "park" | "shopping_street" | "other";
+  status?: string; // orgゾーンのみDB由来。draftの都市に属するゾーンには呼び出し側で別途付与する。
 }
-
-export const FIXED_ZONES: Zone[] = [
-  { id: "university", label: "ダイナン工科大学", x: 280, y: 220, kind: "other" },
-  { id: "residential_n", label: "住宅街・北", x: 380, y: 480, kind: "residential" },
-  { id: "shopping_street", label: "商店街", x: 820, y: 470, kind: "other" },
-  { id: "park", label: "中央公園", x: 980, y: 240, kind: "other" },
-  { id: "residential_e", label: "住宅街・東", x: 960, y: 610, kind: "residential" },
-  { id: "residential_s", label: "住宅街・南", x: 630, y: 760, kind: "residential" },
-];
-
-// 固定ゾーン同士、および創業当初からの6組織を結ぶ道路網。
-// 創業6組織は org-<id> ではなく歴史的な固定IDのまま扱う
-// （すでにmigrationで座標をorganizationsテーブル側にも複製済み）。
-export const FIXED_EDGES: [string, string][] = [
-  ["university", "residential_n"],
-  ["residential_n", "org-1"],
-  ["org-1", "org-4"],
-  ["org-1", "org-6"],
-  ["org-1", "shopping_street"],
-  ["org-4", "park"],
-  ["org-6", "park"],
-  ["shopping_street", "residential_e"],
-  ["shopping_street", "org-2"],
-  ["residential_e", "org-3"],
-  ["residential_e", "org-5"],
-  ["org-2", "org-5"],
-  ["residential_s", "org-1"],
-  ["residential_s", "org-3"],
-];
 
 export function orgZoneId(orgId: number): string {
   return `org-${orgId}`;
 }
 
-export function cityZoneId(cityId: number): string {
-  return `city-${cityId}`;
+export function facilityZoneId(facilityId: number): string {
+  return `facility-${facilityId}`;
 }
 
 function distance(a: { x: number; y: number }, b: { x: number; y: number }): number {
@@ -58,7 +31,7 @@ function distance(a: { x: number; y: number }, b: { x: number; y: number }): num
 }
 
 /**
- * 既存ゾーン群の外側に、新しい組織ゾーンの座標を自動的に割り当てる。
+ * 既存ゾーン群の外側に、新しいゾーン(組織・施設)の座標を自動的に割り当てる。
  * 「マップのエリア拡大も積極的に行う」ため、既存の範囲の外へ広げていく。
  */
 export function assignNewOrgPosition(existingZones: { x: number; y: number }[]): { x: number; y: number } {
@@ -86,9 +59,11 @@ export function assignNewOrgPosition(existingZones: { x: number; y: number }[]):
 }
 
 /**
- * 既存ゾーン群の外側に、新しい都市の座標を自動的に割り当てる。
- * 都市は組織1件よりずっと大きな区画なので、間隔を広めに取って
- * 既存の街並みと視覚的にはっきり分かれる位置に配置する。
+ * 既存ゾーン群の外側に、新しい都市の最初のゾーンを置くための「拠点座標」を割り当てる。
+ * 都市は組織1件よりずっと大きな区画になりうるので、間隔を広めに取って
+ * 既存の街並みと視覚的にはっきり分かれる位置を返す。cities.map_x/map_y として保存され、
+ * その都市に属する組織・施設を新規作成する際の基準点として使われる
+ * （この座標自体は地図上に何かを描画するためのものではない）。
  */
 export function assignNewCityPosition(existingPoints: { x: number; y: number }[]): { x: number; y: number } {
   if (existingPoints.length === 0) return { x: 650, y: 430 };
@@ -114,6 +89,24 @@ export function assignNewCityPosition(existingPoints: { x: number; y: number }[]
   return { x: Math.round(cx + baseRadius), y: Math.round(cy) };
 }
 
+/**
+ * 組織・施設を新規作成する際の配置座標を決める共通ロジック。
+ * ダイナン市(id=1)は既存の全ゾーンを基準に外側へ、それ以外の都市はその都市の
+ * 拠点座標(cities.map_x/map_y)+同都市の既存ゾーンを基準に配置する。
+ * こうすることで、都市ごとにまとまったゾーン群が視覚的に分かれて広がっていく。
+ */
+export function assignZonePositionForCity(
+  city: { id: number; map_x: number | null; map_y: number | null },
+  allZonePoints: { x: number; y: number }[],
+  sameCityZonePoints: { x: number; y: number }[]
+): { x: number; y: number } {
+  if (city.id === 1) {
+    return assignNewOrgPosition(allZonePoints);
+  }
+  const cityAnchor = { x: city.map_x ?? 650, y: city.map_y ?? 430 };
+  return assignNewOrgPosition([cityAnchor, ...sameCityZonePoints]);
+}
+
 /** 新しいゾーンを、最も近い既存ゾーンへの1本の道でつなぐ。 */
 export function nearestZoneId(point: { x: number; y: number }, zones: Zone[]): string | null {
   let best: Zone | null = null;
@@ -129,7 +122,7 @@ export function nearestZoneId(point: { x: number; y: number }, zones: Zone[]): s
 }
 
 /** organizations テーブルの内容から、組織ゾーンの一覧を構築する。 */
-export function buildOrgZones(organizations: OrganizationRow[]): Zone[] {
+export function buildOrgZones(organizations: OrganizationRow[], draftCityIds: Set<number> = new Set()): Zone[] {
   return organizations
     .filter((o) => o.map_x != null && o.map_y != null)
     .map((o) => ({
@@ -138,79 +131,51 @@ export function buildOrgZones(organizations: OrganizationRow[]): Zone[] {
       x: o.map_x as number,
       y: o.map_y as number,
       kind: "org" as const,
-      status: o.status,
+      // 組織自体の状態(倒産・調査中等)を優先し、draftの都市に属する場合のみdraft表示にする。
+      status: o.status !== "active" ? o.status : o.city_id != null && draftCityIds.has(o.city_id) ? "draft" : o.status,
     }));
 }
 
-/**
- * cities テーブルの内容から、都市ゾーンの一覧を構築する。
- * 首都ダイナン市(id=1)は既存の街並み全体がその表現なので対象外とし、
- * それ以外の都市だけを地図上のランドマークとして表示する。
- */
-export function buildCityZones(cities: CityRow[]): Zone[] {
-  return cities
-    .filter((c) => c.id !== 1 && c.map_x != null && c.map_y != null)
-    .map((c) => ({
-      id: cityZoneId(c.id),
-      label: c.name,
-      x: c.map_x as number,
-      y: c.map_y as number,
-      kind: "city" as const,
-      status: c.status,
-    }));
+const KNOWN_FACILITY_KINDS = new Set(["residential", "university", "park", "shopping_street"]);
+
+/** facilities テーブルの内容から、施設ゾーンの一覧を構築する。 */
+export function buildFacilityZones(facilities: FacilityRow[], draftCityIds: Set<number> = new Set()): Zone[] {
+  return facilities.map((f) => ({
+    id: facilityZoneId(f.id),
+    label: f.name,
+    x: f.map_x,
+    y: f.map_y,
+    kind: (KNOWN_FACILITY_KINDS.has(f.kind) ? f.kind : "other") as Zone["kind"],
+    status: draftCityIds.has(f.city_id) ? "draft" : undefined,
+  }));
 }
 
-/** 固定ゾーン+組織ゾーン+都市ゾーンを合わせた全ゾーン一覧を返す。 */
-export function buildAllZones(organizations: OrganizationRow[], cities: CityRow[] = []): Zone[] {
-  return [...FIXED_ZONES, ...buildOrgZones(organizations), ...buildCityZones(cities)];
-}
-
-/**
- * FIXED_EDGESに加え、創業6組織以外の組織ゾーン・追加された都市ゾーンについては
- * 最寄りのゾーンへ自動的に道をつなぐ。
- */
-export function buildAllEdges(
-  zones: Zone[],
+/** 施設ゾーン+組織ゾーンを合わせた全ゾーン一覧を返す（施設を先に並べ、道路接続の起点にする）。 */
+export function buildAllZones(
   organizations: OrganizationRow[],
-  cities: CityRow[] = []
-): [string, string][] {
-  const fixedOrgIds = new Set(FIXED_EDGES.flatMap((e) => e));
-  const edges: [string, string][] = [...FIXED_EDGES];
-  const placed: Zone[] = [...FIXED_ZONES];
+  facilities: FacilityRow[] = [],
+  draftCityIds: Set<number> = new Set()
+): Zone[] {
+  return [...buildFacilityZones(facilities, draftCityIds), ...buildOrgZones(organizations, draftCityIds)];
+}
 
-  // FIXED_EDGESに登場する創業組織ゾーンを先に「配置済み」として扱う。
-  for (const org of organizations) {
-    const zid = orgZoneId(org.id);
-    if (fixedOrgIds.has(zid)) {
-      const z = zones.find((zz) => zz.id === zid);
-      if (z) placed.push(z);
+/**
+ * すべてのゾーンを、渡された順に「それまでに配置済みのゾーン群のうち最も近い1つ」へ
+ * 自動的に接続していく。都市ごとの塊は座標的に離れているため、この単純な最近傍接続だけで
+ * 都市内は密に、都市間は1本の長い道でつながる自然なネットワークになる。
+ */
+export function buildAllEdges(zones: Zone[]): [string, string][] {
+  const edges: [string, string][] = [];
+  const placed: Zone[] = [];
+  for (const zone of zones) {
+    if (placed.length > 0) {
+      const nearest = nearestZoneId(zone, placed);
+      if (nearest) edges.push([zone.id, nearest]);
     }
-  }
-
-  for (const org of organizations) {
-    const zid = orgZoneId(org.id);
-    if (fixedOrgIds.has(zid)) continue; // 創業組織はFIXED_EDGESで接続済み
-    const zone = zones.find((z) => z.id === zid);
-    if (!zone) continue;
-    const nearest = nearestZoneId(zone, placed);
-    if (nearest) edges.push([zid, nearest]);
     placed.push(zone);
   }
-
-  for (const city of cities) {
-    if (city.id === 1) continue;
-    const zid = cityZoneId(city.id);
-    const zone = zones.find((z) => z.id === zid);
-    if (!zone) continue;
-    const nearest = nearestZoneId(zone, placed);
-    if (nearest) edges.push([zid, nearest]);
-    placed.push(zone);
-  }
-
   return edges;
 }
-
-const RESIDENTIAL_ZONES = ["residential_n", "residential_s", "residential_e"];
 
 function hashToIndex(id: number, mod: number): number {
   // idをそのまま使うと隣接IDが同じゾーンに固まりやすいので、簡単に散らす。
@@ -227,28 +192,54 @@ export interface PersonZoneAssignment {
   workZone: string;
 }
 
-export function assignPersonZones(people: PersonRow[]): PersonZoneAssignment[] {
+/** その人物が所属する都市の施設一覧から、指定した種別の施設をハッシュベースで1つ選ぶ。 */
+function pickFacilityByKind(
+  facilitiesByCity: Map<number, FacilityRow[]>,
+  cityId: number,
+  kind: string,
+  seed: number
+): FacilityRow | null {
+  const list = (facilitiesByCity.get(cityId) ?? []).filter((f) => f.kind === kind);
+  if (list.length === 0) return null;
+  return list[Math.abs(hashToIndex(seed, list.length))];
+}
+
+function pickAnyFacility(facilitiesByCity: Map<number, FacilityRow[]>, cityId: number, seed: number): FacilityRow | null {
+  const list = facilitiesByCity.get(cityId) ?? [];
+  if (list.length === 0) return null;
+  return list[Math.abs(hashToIndex(seed + 7, list.length))];
+}
+
+export function assignPersonZones(people: PersonRow[], facilities: FacilityRow[]): PersonZoneAssignment[] {
+  const facilitiesByCity = new Map<number, FacilityRow[]>();
+  for (const f of facilities) {
+    const list = facilitiesByCity.get(f.city_id);
+    if (list) list.push(f);
+    else facilitiesByCity.set(f.city_id, [f]);
+  }
+
   return people.map((p) => {
-    // ダイナン市(id=1)以外の都市の住民は、まだ専用の住宅街ゾーンを
-    // 持たないため、所属先がなければその都市のランドマークを拠点として扱う。
-    const inMainCity = !p.city_id || p.city_id === 1;
-    const homeIndex = Math.abs(hashToIndex(p.id, RESIDENTIAL_ZONES.length));
-    const homeZone = inMainCity ? RESIDENTIAL_ZONES[homeIndex] : cityZoneId(p.city_id as number);
+    const cityId = p.city_id ?? 1;
+    const residential = pickFacilityByKind(facilitiesByCity, cityId, "residential", p.id) ??
+      pickAnyFacility(facilitiesByCity, cityId, p.id);
+    // その都市にまだ施設が1つも無い場合(通常は到達しない)は、存在しないIDのままにして
+    // クライアント側のcomputePosition()の「ゾーンが見つからない」フォールバックに委ねる。
+    const homeZone = residential ? facilityZoneId(residential.id) : "none";
 
     let workZone: string;
     if (p.organization_id) {
       workZone = orgZoneId(p.organization_id);
-    } else if (!inMainCity) {
-      workZone = homeZone;
     } else {
       const occ = p.occupation ?? "";
+      let target: FacilityRow | null = null;
       if (occ.includes("学生")) {
-        workZone = "university";
+        target = pickFacilityByKind(facilitiesByCity, cityId, "university", p.id);
       } else if (occ.includes("主婦") || occ.includes("主夫") || occ === "無職") {
-        workZone = homeZone;
+        target = null; // 自宅にいる扱い
       } else {
-        workZone = "shopping_street";
+        target = pickFacilityByKind(facilitiesByCity, cityId, "shopping_street", p.id);
       }
+      workZone = target ? facilityZoneId(target.id) : homeZone;
     }
 
     return {

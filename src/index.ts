@@ -3,6 +3,7 @@ import type { Env } from "./types";
 import {
   clearPeopleOrganization,
   createCity,
+  createFacility,
   createOccupationType,
   createOrganization,
   createPerson,
@@ -12,6 +13,7 @@ import {
   deleteRelationshipPair,
   getCity,
   getEvent,
+  getFacility,
   getNews,
   getOrganization,
   getPerson,
@@ -24,6 +26,8 @@ import {
   latestEconomicDataByOrg,
   latestPriceIndex,
   listCities,
+  listFacilities,
+  listFacilitiesByCity,
   listNews,
   listNewsByCategory,
   listNewsForPerson,
@@ -40,6 +44,7 @@ import {
   listTimeline,
   parseIdArray,
   updateCityAdmin,
+  updateFacility,
   updateNews,
   updateOccupationType,
   updateOrganizationAdmin,
@@ -48,8 +53,10 @@ import {
   updateWorldWeather,
 } from "./db/queries";
 import { html } from "./utils/html";
+import { computeBirthDateFromAge } from "./utils/date";
 import {
   CITY_STATUSES,
+  FACILITY_KINDS,
   NEWS_CATEGORIES,
   ORG_KINDS,
   ORG_STATUSES,
@@ -71,11 +78,11 @@ import { adminDashboardPage } from "./views/admin";
 import { mapView } from "./views/map";
 import {
   assignNewCityPosition,
-  assignNewOrgPosition,
+  assignZonePositionForCity,
   assignPersonZones,
   buildAllEdges,
   buildAllZones,
-  cityZoneId,
+  facilityZoneId,
   orgZoneId,
 } from "./views/mapZones";
 import { runDailySimulation } from "./simulation/runDailySimulation";
@@ -253,9 +260,15 @@ app.get("/economy", async (c) => {
 });
 
 app.get("/map", async (c) => {
-  const [world, orgs, cities] = await Promise.all([getWorld(c.env), listOrganizations(c.env), listCities(c.env)]);
-  const zones = buildAllZones(orgs.results ?? [], cities.results ?? []);
-  const edges = buildAllEdges(zones, orgs.results ?? [], cities.results ?? []);
+  const [world, orgs, facilities, cities] = await Promise.all([
+    getWorld(c.env),
+    listOrganizations(c.env),
+    listFacilities(c.env),
+    listCities(c.env),
+  ]);
+  const draftCityIds = new Set((cities.results ?? []).filter((ci) => ci.status !== "active").map((ci) => ci.id));
+  const zones = buildAllZones(orgs.results ?? [], facilities.results ?? [], draftCityIds);
+  const edges = buildAllEdges(zones);
   return c.html(
     page({
       title: "街の様子",
@@ -267,24 +280,29 @@ app.get("/map", async (c) => {
 });
 
 app.get("/api/map/people", async (c) => {
-  const [people, orgs, cities, latestNews] = await Promise.all([
+  const [people, orgs, facilities, cities, latestNews] = await Promise.all([
     listPeople(c.env, 300),
     listOrganizations(c.env),
+    listFacilities(c.env),
     listCities(c.env),
     listNews(c.env, 1),
   ]);
   const orgList = orgs.results ?? [];
+  const facilityList = facilities.results ?? [];
   const cityList = cities.results ?? [];
+  const draftCityIds = new Set(cityList.filter((ci) => ci.status !== "active").map((ci) => ci.id));
 
   const zoneStatus: Record<string, string> = {};
   for (const org of orgList) {
     if (org.status !== "active") {
       zoneStatus[orgZoneId(org.id)] = org.status;
+    } else if (org.city_id != null && draftCityIds.has(org.city_id)) {
+      zoneStatus[orgZoneId(org.id)] = "draft";
     }
   }
-  for (const city of cityList) {
-    if (city.id !== 1 && city.status !== "active") {
-      zoneStatus[cityZoneId(city.id)] = "draft";
+  for (const facility of facilityList) {
+    if (draftCityIds.has(facility.city_id)) {
+      zoneStatus[facilityZoneId(facility.id)] = "draft";
     }
   }
 
@@ -298,7 +316,7 @@ app.get("/api/map/people", async (c) => {
     : null;
 
   return c.json({
-    people: assignPersonZones(people.results ?? []),
+    people: assignPersonZones(people.results ?? [], facilityList),
     zoneStatus,
     spotlight,
   });
@@ -449,8 +467,8 @@ app.post("/api/admin/cities", async (c) => {
       ? body.status
       : "draft";
 
-  const [orgs, cities] = await Promise.all([listOrganizations(c.env), listCities(c.env)]);
-  const existingZones = buildAllZones(orgs.results ?? [], cities.results ?? []);
+  const [orgs, existingFacilities] = await Promise.all([listOrganizations(c.env), listFacilities(c.env)]);
+  const existingZones = buildAllZones(orgs.results ?? [], existingFacilities.results ?? []);
   const pos = assignNewCityPosition(existingZones.map((z) => ({ x: z.x, y: z.y })));
 
   const id = await createCity(c.env, {
@@ -462,6 +480,27 @@ app.post("/api/admin/cities", async (c) => {
     map_x: pos.x,
     map_y: pos.y,
   });
+
+  // 新しい都市は単一のランドマークで終わらせず、最初から住宅街・商店街の施設を
+  // 用意しておく（「新都市の各施設単位で表示されるべき」という方針のため）。
+  const newCityAnchor = { id, map_x: pos.x, map_y: pos.y };
+  const seededPoints: { x: number; y: number }[] = [];
+  const starterFacilities: Array<{ name: string; kind: string }> = [
+    { name: `${name}住宅街`, kind: "residential" },
+    { name: `${name}商店街`, kind: "shopping_street" },
+  ];
+  for (const starter of starterFacilities) {
+    const facPos = assignZonePositionForCity(newCityAnchor, [], seededPoints);
+    await createFacility(c.env, {
+      name: starter.name,
+      kind: starter.kind,
+      city_id: id,
+      description: null,
+      map_x: facPos.x,
+      map_y: facPos.y,
+    });
+    seededPoints.push(facPos);
+  }
 
   return c.json({ ok: true, id, position: pos });
 });
@@ -497,6 +536,90 @@ app.put("/api/admin/cities/:id", async (c) => {
   }
 
   await updateCityAdmin(c.env, id, { name, population, description, industries, status });
+  return c.json({ ok: true });
+});
+
+// ---- 管理画面: 施設管理 ----
+
+app.get("/api/admin/facilities", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const cityIdParam = c.req.query("cityId");
+  const cityId = cityIdParam ? Number(cityIdParam) : null;
+  const facilities =
+    cityId && Number.isInteger(cityId) ? await listFacilitiesByCity(c.env, cityId) : await listFacilities(c.env);
+  return c.json({
+    facilities: (facilities.results ?? []).map((f) => ({
+      id: f.id,
+      name: f.name,
+      kind: f.kind,
+      city_id: f.city_id,
+      description: f.description,
+    })),
+  });
+});
+
+app.post("/api/admin/facilities", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const name = typeof body?.name === "string" ? body.name.trim().slice(0, 40) : "";
+  if (!name) return c.json({ error: "name is required" }, 400);
+  const kind =
+    typeof body?.kind === "string" && (FACILITY_KINDS as readonly string[]).includes(body.kind) ? body.kind : "other";
+  const description =
+    typeof body?.description === "string" && body.description.trim() ? body.description.trim().slice(0, 200) : null;
+  const cityIdRaw = typeof body?.city_id === "number" && Number.isInteger(body.city_id) ? body.city_id : 1;
+  const city = await getCity(c.env, cityIdRaw);
+  if (!city) return c.json({ error: "invalid city_id" }, 400);
+
+  const [orgs, facilities] = await Promise.all([listOrganizations(c.env), listFacilities(c.env)]);
+  const orgList = orgs.results ?? [];
+  const facilityList = facilities.results ?? [];
+  const zones = buildAllZones(orgList, facilityList);
+  const sameCityZonePoints = [
+    ...orgList.filter((o) => o.city_id === city.id && o.map_x != null && o.map_y != null)
+      .map((o) => ({ x: o.map_x as number, y: o.map_y as number })),
+    ...facilityList.filter((f) => f.city_id === city.id).map((f) => ({ x: f.map_x, y: f.map_y })),
+  ];
+  const pos = assignZonePositionForCity(
+    city,
+    zones.map((z) => ({ x: z.x, y: z.y })),
+    sameCityZonePoints
+  );
+
+  const id = await createFacility(c.env, {
+    name,
+    kind,
+    city_id: city.id,
+    description,
+    map_x: pos.x,
+    map_y: pos.y,
+  });
+
+  return c.json({ ok: true, id, position: pos });
+});
+
+app.put("/api/admin/facilities/:id", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const existing = await getFacility(c.env, id);
+  if (!existing) return c.json({ error: "not found" }, 404);
+
+  const body = await c.req.json().catch(() => null);
+  const name = typeof body?.name === "string" && body.name.trim() ? body.name.trim().slice(0, 40) : existing.name;
+  const kind =
+    typeof body?.kind === "string" && (FACILITY_KINDS as readonly string[]).includes(body.kind)
+      ? body.kind
+      : existing.kind;
+  const description =
+    typeof body?.description === "string" && body.description.trim()
+      ? body.description.trim().slice(0, 200)
+      : existing.description;
+
+  await updateFacility(c.env, id, { name, kind, description });
   return c.json({ ok: true });
 });
 
@@ -616,14 +739,16 @@ app.post("/api/admin/news/generate", async (c) => {
     reporterId = await getRandomReporterId(c.env, city.id);
   }
 
-  const [orgsResult, peopleResult, recentEventsResult] = await Promise.all([
+  const [orgsResult, facilitiesResult, peopleResult, recentEventsResult] = await Promise.all([
     listOrganizationsByCity(c.env, city.id),
+    listFacilitiesByCity(c.env, city.id),
     listPeopleByCity(c.env, city.id, 40),
     listRecentEvents(c.env, 5),
   ]);
   // 指定された人物・組織がその都市の通常一覧に含まれない場合(別都市所属など)も
   // 確実にAIへ渡し、参照・選択を許可する。
   const organizations = mergeById(orgsResult.results ?? [], hintOrgs);
+  const facilities = facilitiesResult.results ?? [];
   const people = mergeById(peopleResult.results ?? [], hintPeople);
   const recentEvents = recentEventsResult.results ?? [];
 
@@ -632,6 +757,7 @@ app.post("/api/admin/news/generate", async (c) => {
 
   const { system, user } = buildEventPrompt({
     worldName: world.name,
+    cityId: city.id,
     cityName: city.name,
     cityDescription: city.description ?? "",
     population: city.population,
@@ -645,12 +771,13 @@ app.post("/api/admin/news/generate", async (c) => {
 
   const aiResult = await callAiForJson(c.env, c.env.AI_EVENT_MODEL, system, user);
   if (!aiResult.ok) return c.json({ error: "イベントAIの呼び出しに失敗しました: " + aiResult.error }, 502);
-  const validated = validateEventDraft(aiResult.json, allowedPersonIds, allowedOrgIds);
+  const validated = validateEventDraft(aiResult.json, allowedPersonIds, allowedOrgIds, city.id);
   if (!validated) return c.json({ error: "イベントAIの出力を検証できませんでした" }, 502);
 
   const nowIso = () => new Date().toISOString();
 
-  // AIが提案した新規人物をDBへ作成する。
+  // AIが提案した新規人物をDBへ作成する。生年月日・生まれはAIには書かせず、
+  // 年齢・所在都市から機械的に算出する（キャラクター作成の全項目を必ず埋める）。
   const createdPeopleIds: number[] = [];
   const createdPeopleNames: string[] = [];
   for (const np of validated.new_people) {
@@ -665,13 +792,50 @@ app.post("/api/admin/news/generate", async (c) => {
       money: 0,
       status: "alive",
       bio: null,
-      annual_income: null,
-      job_title: null,
-      birth_date: null,
-      birthplace: null,
+      annual_income: np.annual_income,
+      job_title: np.job_title,
+      birth_date: computeBirthDateFromAge(world.current_date, np.age),
+      birthplace: city.name,
     });
     createdPeopleIds.push(newId);
     createdPeopleNames.push(np.name);
+  }
+
+  // AIが提案した新規組織・施設をDBへ作成する（同一都市のみ、validateEventDraftで検証済み）。
+  const createdOrgIds: number[] = [];
+  const createdOrgNames: string[] = [];
+  const zonePoints = [
+    ...organizations.filter((o) => o.map_x != null && o.map_y != null).map((o) => ({ x: o.map_x as number, y: o.map_y as number })),
+    ...facilities.map((f) => ({ x: f.map_x, y: f.map_y })),
+  ];
+  for (const no of validated.new_organizations) {
+    const pos = assignZonePositionForCity(city, zonePoints, zonePoints);
+    const newOrgId = await createOrganization(c.env, {
+      name: no.name,
+      kind: no.kind,
+      city_id: city.id,
+      description: null,
+      industry: no.industry,
+      employee_scale: null,
+      founded_year: null,
+      map_x: pos.x,
+      map_y: pos.y,
+    });
+    zonePoints.push(pos);
+    createdOrgIds.push(newOrgId);
+    createdOrgNames.push(no.name);
+  }
+  for (const nf of validated.new_facilities) {
+    const pos = assignZonePositionForCity(city, zonePoints, zonePoints);
+    await createFacility(c.env, {
+      name: nf.name,
+      kind: nf.kind,
+      city_id: city.id,
+      description: null,
+      map_x: pos.x,
+      map_y: pos.y,
+    });
+    zonePoints.push(pos);
   }
 
   // 管理者が明示的に選んだ人物・組織は、AIが出力に含めていなくても機械的に補完する。
@@ -679,13 +843,16 @@ app.post("/api/admin/news/generate", async (c) => {
     new Set([...validated.related_person_ids, ...createdPeopleIds, ...hintPersonIds.filter((id) => allowedPersonIds.has(id))])
   );
   const relatedOrgIds = Array.from(
-    new Set([...validated.related_organization_ids, ...hintOrgIds.filter((id) => allowedOrgIds.has(id))])
+    new Set([...validated.related_organization_ids, ...createdOrgIds, ...hintOrgIds.filter((id) => allowedOrgIds.has(id))])
   );
   const relatedPeopleNames = [
     ...people.filter((p) => relatedPeopleIds.includes(p.id)).map((p) => p.name),
     ...createdPeopleNames,
   ];
-  const relatedOrgNames = organizations.filter((o) => relatedOrgIds.includes(o.id)).map((o) => o.name);
+  const relatedOrgNames = [
+    ...organizations.filter((o) => relatedOrgIds.includes(o.id)).map((o) => o.name),
+    ...createdOrgNames,
+  ];
 
   const { system: newsSystem, user: newsUser } = buildNewsPrompt(
     { cityName: city.name, targetDate: world.current_date },
@@ -1213,23 +1380,23 @@ app.post("/api/admin/organizations", async (c) => {
   if (!city) return c.json({ error: "invalid city_id" }, 400);
 
   const world = await getWorld(c.env);
-  const [orgs, cities] = await Promise.all([listOrganizations(c.env), listCities(c.env)]);
+  const [orgs, facilities] = await Promise.all([listOrganizations(c.env), listFacilities(c.env)]);
   const orgList = orgs.results ?? [];
-  const cityList = cities.results ?? [];
-  const zones = buildAllZones(orgList, cityList);
+  const facilityList = facilities.results ?? [];
+  const zones = buildAllZones(orgList, facilityList);
 
   // ダイナン市(id=1)の企業は既存の街並み全体の外側へ、それ以外の都市の企業は
-  // その都市自身のランドマーク付近（同じ都市の既存企業からも間隔を取って）配置する。
-  let pos: { x: number; y: number };
-  if (city.id === 1) {
-    pos = assignNewOrgPosition(zones.map((z) => ({ x: z.x, y: z.y })));
-  } else {
-    const cityAnchor = { x: city.map_x ?? 650, y: city.map_y ?? 430 };
-    const sameCityOrgPoints = orgList
-      .filter((o) => o.city_id === city.id && o.map_x != null && o.map_y != null)
-      .map((o) => ({ x: o.map_x as number, y: o.map_y as number }));
-    pos = assignNewOrgPosition([cityAnchor, ...sameCityOrgPoints]);
-  }
+  // その都市自身の拠点付近（同じ都市の既存の企業・施設からも間隔を取って）配置する。
+  const sameCityZonePoints = [
+    ...orgList.filter((o) => o.city_id === city.id && o.map_x != null && o.map_y != null)
+      .map((o) => ({ x: o.map_x as number, y: o.map_y as number })),
+    ...facilityList.filter((f) => f.city_id === city.id).map((f) => ({ x: f.map_x, y: f.map_y })),
+  ];
+  const pos = assignZonePositionForCity(
+    city,
+    zones.map((z) => ({ x: z.x, y: z.y })),
+    sameCityZonePoints
+  );
 
   const id = await createOrganization(c.env, {
     name,
