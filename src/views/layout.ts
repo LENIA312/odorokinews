@@ -224,6 +224,8 @@ const STYLE = `
     gap: 0.9rem;
   }
   .person-card {
+    display: block;
+    color: inherit;
     background: var(--paper);
     border: 1px solid var(--line);
     border-radius: 4px;

@@ -42,7 +42,6 @@ export function peopleListView(people: PersonRow[], orgById: Map<number, Organiz
       return html`<a
         class="person-card"
         href="/people/${p.id}"
-        style="display:block;color:inherit"
         data-kana-row="${row}"
         data-search="${searchKey}"
       >
