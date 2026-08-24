@@ -66,6 +66,7 @@ import {
   WEATHER_CONDITIONS,
 } from "./constants";
 import { page } from "./views/layout";
+import { leadFromBody } from "./views/components";
 import { newsListSection, categoryTabs } from "./views/newsList";
 import { newsDetailView } from "./views/newsDetail";
 import { worldView } from "./views/world";
@@ -154,6 +155,8 @@ app.get("/news/:id", async (c) => {
     page({
       title: news.title,
       activePath: "/news",
+      path: `/news/${id}`,
+      description: leadFromBody(news.body),
       worldDate: world?.current_date,
       body: newsDetailView(news, city?.name ?? null, relatedPeople, relatedOrgs, reporter),
     }).value
@@ -217,6 +220,8 @@ app.get("/people/:id", async (c) => {
     page({
       title: person.name,
       activePath: "/people",
+      path: `/people/${id}`,
+      description: person.bio ? leadFromBody(person.bio) : `${person.occupation ?? "モーゼン・アングラの住民"}・${person.name}のプロフィール`,
       worldDate: world?.current_date,
       body: personDetailView(person, organization, city, relationships, relatedNews),
     }).value

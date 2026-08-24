@@ -68,6 +68,8 @@ GitHubリポジトリ: `https://github.com/LENIA312/odorokinews`（public）。
   取材・街や人物が日々成長していく仕組みを、上記の「シミュレーション」という語を避けつつ分かりやすく
   紹介するモーダルが開く（`layout.ts`の`ABOUT_SCRIPT`/`ABOUT_MODAL_BODY`）。**初回アクセス時は
   localStorage(`mosen_chronicle_about_seen`)に記録が無ければ自動的に開く**（強制表示は初回のみ）。
+- 全ページにOGP/Twitter Card用のメタタグを出力しており、XやLINE等でURLを共有した際に
+  タイトル・説明文・バナー画像（`/og-image.png`）付きのリンクカードが表示される（10.1節）。
 
 ---
 
@@ -132,7 +134,10 @@ scripts/
                                   施設機能の追加前に作成済みだった都市へ、新規都市作成時と同じ
                                   住宅街+商店街を一度だけ補完
 seed.sql / seed_more_people.sql D1への初期データ投入（国・都市・企業・人物）
-wrangler.jsonc                 Workers設定（D1/AIバインディング、Cron、vars）
+public/
+  og-image.png                  SNSカード用の固定バナー画像（1200x630、10.1節）。`wrangler.jsonc`の
+                                  `assets.directory`経由でHonoを介さず直接配信される
+wrangler.jsonc                 Workers設定（D1/AIバインディング、静的アセット、Cron、vars）
 ```
 
 ---
@@ -846,7 +851,33 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
   JS文字列配列を全部組み立てて、最後に文字列結合して返す」という同じパターンを踏襲している。
   新しいUI要素を追加する際もこのパターンに合わせること。
 
-### 動作確認の方法（このパターン特有の注意）
+### 10.1 OGP/Twitter Card（SNSリンクカード）
+
+`page()`（`views/layout.ts`）が全ページ共通で`<head>`にOGP/Twitter Cardのメタタグを出力する。
+これにより、X（旧Twitter）やLINE等にURLを貼るとタイトル・説明文・バナー画像付きのリンクカードが
+表示されるようになる（従来はメタタグが一切無く、リンクだけの素っ気ない見た目だった）。
+
+- `page()`のオプションに`path`（実URL。省略時は`activePath`と同じ）と`description`（省略時は
+  サイト共通の説明文）を追加。`og:url`/`canonical`/`og:description`/`twitter:description`は
+  これらから組み立てる。
+- 画像は`og:image`/`twitter:image`とも固定の`${SITE_URL}/og-image.png`（1200x630、記事ごとの
+  動的生成はしていない）。ニュース詳細(`/news/:id`)・人物詳細(`/people/:id`)では
+  `path`にIDを含めた実URLを、`description`には記事本文の先頭行（`leadFromBody()`,
+  `components.ts`）または人物のプロフィール文を渡している（`index.ts`の該当ルート）。
+- `og-image.png`は`public/`ディレクトリに置き、`wrangler.jsonc`の`assets.directory`で配信する
+  （3章）。**Honoのルーティングを一切通らない**（一致する静的ファイルがあれば`run_worker_first`を
+  指定しない限りWorker本体より先に配信される）。画像自体はビルド成果物であり、リポジトリには
+  完成したPNGだけをコミットしている（生成手順の再現性は次の段落を参照）。
+- 画像の生成方法（一度きりの手作業、Worker実行時には一切関与しない）: SVGでバナーを組み、
+  `@resvg/resvg-js`（Node.js用、ローカルの一時devDependencyとしてインストール→使用後に削除。
+  `package.json`には残していない）でPNGへラスタライズした。日本語フォントはOSに入っている
+  `Yu Mincho`（`yumin.ttf`/`yumindb.ttf`）を`fontFiles`で明示的に指定している（`loadSystemFonts`
+  だとビルド環境依存になるため）。デザインを変更したい場合は同じ手順で作り直し、
+  `public/og-image.png`を上書きすればよい。
+- `twitter:site`は`@MosenChronicle`を固定で埋め込んでいる（Xのアカウント名が変わったらここも
+  更新すること）。
+
+### 10.2 動作確認の方法（このパターン特有の注意）
 
 TypeScriptのコンパイル（`tsc --noEmit`）は文字列配列の中身までは検証してくれない
 （ただの文字列なので）。変更のたびに以下を行うこと:
@@ -885,6 +916,7 @@ TypeScriptのコンパイル（`tsc --noEmit`）は文字列配列の中身ま�
 |---|---|---|
 | `DB` | D1 Database | `odorokinews-db`（database_id は `wrangler.jsonc` 参照） |
 | `AI` | Workers AI | 常にリモート実行 |
+| `assets` | 静的アセット | `public/`配下（現状`og-image.png`のみ、10.1節） |
 
 Cronトリガー: `*/10 * * * *`（実際の配信頻度はDB側の`world.auto_publish_times`で管理、5.2節参照）+
 `0 23 * * *`（=08:00 JST、X日次まとめ投稿。14章参照）。
@@ -1048,3 +1080,8 @@ Bearerトークンでは投稿できない）。外部OAuthライブラリは使
   （`X_API_KEY`等）が未設定の場合は投稿を静かにスキップする設計。
 - 2026-08-25: カスタムドメインを`https://mosen-chronicle.pisorium.com`に変更（1章）。
   `constants.ts`の`SITE_URL`をこの新ドメインに更新（X日次まとめ投稿のリンク先等で使用、14章）。
+- 2026-08-25: 全ページにOGP/Twitter Cardのメタタグを追加し、X等でURLを共有した際にタイトル・
+  説明文・バナー画像付きのリンクカードが表示されるようにした（10.1節）。バナー画像
+  (`public/og-image.png`、1200x630)はSVG+`@resvg/resvg-js`で一度だけ生成しリポジトリにコミット。
+  配信は`wrangler.jsonc`に追加した`assets.directory`（Honoを経由しない静的配信）で行う。
+  ニュース詳細・人物詳細ページは記事本文/プロフィールの先頭行を`og:description`に使う。

@@ -1,5 +1,8 @@
 import { html, raw, RawHtml } from "../utils/html";
 import { formatWorldDateWithWeekdayJa } from "../utils/date";
+import { SITE_URL } from "../constants";
+
+const DEFAULT_DESCRIPTION = "架空世界モーゼン・アングラの出来事を報じるニュースサイト モーゼン・クロニクル";
 
 const NAV_ITEMS = [
   { href: "/news", label: "ニュース" },
@@ -470,7 +473,19 @@ const ABOUT_MODAL_BODY = `
   この瞬間にも、モーゼン・アングラのどこかで次のニュースの種が生まれているかもしれません。</p>
 `;
 
-export function page(opts: { title: string; activePath: string; worldDate?: string; body: RawHtml }): RawHtml {
+export function page(opts: {
+  title: string;
+  activePath: string;
+  path?: string;
+  description?: string;
+  worldDate?: string;
+  body: RawHtml;
+}): RawHtml {
+  const pageUrl = `${SITE_URL}${opts.path ?? opts.activePath}`;
+  const description = opts.description ?? DEFAULT_DESCRIPTION;
+  const ogTitle = opts.title === "トップ" ? "モーゼン・クロニクル" : `${opts.title} | モーゼン・クロニクル`;
+  const imageUrl = `${SITE_URL}/og-image.png`;
+
   const nav = NAV_ITEMS.map(
     (item) =>
       html`<a href="${item.href}" class="${item.href === opts.activePath ? "active" : ""}">${item.label}</a>`.value
@@ -491,7 +506,21 @@ export function page(opts: { title: string; activePath: string; worldDate?: stri
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${opts.title} | モーゼン・クロニクル</title>
-  <meta name="description" content="架空世界モーゼン・アングラの出来事を報じるニュースサイト モーゼン・クロニクル" />
+  <meta name="description" content="${description}" />
+  <link rel="canonical" href="${pageUrl}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="モーゼン・クロニクル" />
+  <meta property="og:title" content="${ogTitle}" />
+  <meta property="og:description" content="${description}" />
+  <meta property="og:url" content="${pageUrl}" />
+  <meta property="og:image" content="${imageUrl}" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@MosenChronicle" />
+  <meta name="twitter:title" content="${ogTitle}" />
+  <meta name="twitter:description" content="${description}" />
+  <meta name="twitter:image" content="${imageUrl}" />
   <style>${raw(STYLE)}</style>
 </head>
 <body>
