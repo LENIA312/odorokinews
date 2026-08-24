@@ -254,6 +254,17 @@ export function updateNews(env: Env, id: number, fields: NewsUpdateFields): Prom
     .run();
 }
 
+// ニュースを削除する。対応するevents/timelineも合わせて削除し、
+// simulation_runsからの参照はNULLに戻す(実行履歴自体は残す)。
+// 人物・組織・経済への既適用の影響は取り消さない(記事の削除≠出来事の取り消し)。
+export async function deleteNewsCascade(env: Env, newsId: number, eventId: number): Promise<void> {
+  await env.DB.prepare("UPDATE simulation_runs SET news_id = NULL WHERE news_id = ?").bind(newsId).run();
+  await env.DB.prepare("UPDATE simulation_runs SET event_id = NULL WHERE event_id = ?").bind(eventId).run();
+  await env.DB.prepare("DELETE FROM timeline WHERE event_id = ?").bind(eventId).run();
+  await env.DB.prepare("DELETE FROM news WHERE id = ?").bind(newsId).run();
+  await env.DB.prepare("DELETE FROM events WHERE id = ?").bind(eventId).run();
+}
+
 export interface PersonUpdateFields {
   name: string;
   name_kana: string | null;
@@ -287,6 +298,44 @@ export function updatePerson(env: Env, id: number, fields: PersonUpdateFields): 
       id
     )
     .run();
+}
+
+export interface PersonCreateFields {
+  name: string;
+  name_kana: string | null;
+  age: number | null;
+  gender: string | null;
+  city_id: number;
+  occupation: string | null;
+  organization_id: number | null;
+  money: number;
+  status: string;
+  bio: string | null;
+}
+
+export async function createPerson(env: Env, fields: PersonCreateFields): Promise<number> {
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(
+    `INSERT INTO people
+       (name, name_kana, age, gender, city_id, occupation, organization_id, money, status, origin, bio, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'admin_manual', ?, ?, ?)`
+  )
+    .bind(
+      fields.name,
+      fields.name_kana,
+      fields.age,
+      fields.gender,
+      fields.city_id,
+      fields.occupation,
+      fields.organization_id,
+      fields.money,
+      fields.status,
+      fields.bio,
+      now,
+      now
+    )
+    .run();
+  return result.meta.last_row_id as number;
 }
 
 export interface OrganizationUpdateFields {

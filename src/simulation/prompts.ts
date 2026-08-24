@@ -1,6 +1,13 @@
 import { ORG_STATUSES, PERSON_STATUSES } from "../constants";
 import type { EventRow, OrganizationRow, PersonRow } from "../types";
 
+export interface EventHints {
+  mustIncludePersonIds?: number[];
+  mustIncludeOrgIds?: number[];
+  genre?: string | null;
+  keywords?: string | null;
+}
+
 export interface WorldContext {
   worldName: string;
   cityName: string;
@@ -11,6 +18,7 @@ export interface WorldContext {
   organizations: OrganizationRow[];
   people: PersonRow[];
   recentEvents: EventRow[];
+  hints?: EventHints;
 }
 
 const EVENT_SYSTEM_PROMPT = `あなたは架空世界シミュレーションの「イベントAI」です。
@@ -33,6 +41,7 @@ const EVENT_SYSTEM_PROMPT = `あなたは架空世界シミュレーションの
 
 export function buildEventPrompt(ctx: WorldContext): { system: string; user: string } {
   const orgById = new Map(ctx.organizations.map((o) => [o.id, o]));
+  const peopleById = new Map(ctx.people.map((p) => [p.id, p]));
   const orgList = ctx.organizations
     .map((o) => `- id=${o.id} name="${o.name}" kind=${o.kind} status=${o.status}`)
     .join("\n");
@@ -73,13 +82,28 @@ export function buildEventPrompt(ctx: WorldContext): { system: string; user: str
       )
     : [];
 
+  const hints = ctx.hints;
+  const mustPeopleNames = (hints?.mustIncludePersonIds ?? [])
+    .map((id) => peopleById.get(id))
+    .filter((p): p is PersonRow => Boolean(p))
+    .map((p) => `id=${p.id} name="${p.name}"`);
+  const mustOrgNames = (hints?.mustIncludeOrgIds ?? [])
+    .map((id) => orgById.get(id))
+    .filter((o): o is OrganizationRow => Boolean(o))
+    .map((o) => `id=${o.id} name="${o.name}"`);
+  const hasHints = mustPeopleNames.length > 0 || mustOrgNames.length > 0 || hints?.genre || hints?.keywords;
+  const hintsSection = hasHints
+    ? `\n# 管理者からの指定（必ず反映すること）
+${mustPeopleNames.length ? `- 必ず登場させる人物: ${mustPeopleNames.join("、")}\n` : ""}${mustOrgNames.length ? `- 必ず登場させる組織: ${mustOrgNames.join("、")}\n` : ""}${hints?.genre ? `- ジャンル指定: ${hints.genre}\n` : ""}${hints?.keywords ? `- 含めたいキーワード: ${hints.keywords}\n` : ""}上記の指定は related_people / related_organizations に必ず含め、指定に沿った出来事にすること。\n`
+    : "";
+
   const user = `# 世界設定
 国名: ${ctx.worldName}
 都市: ${ctx.cityName}（人口: ${ctx.population ?? "不明"}）
 都市の説明: ${ctx.cityDescription}
 生成対象の世界日付: ${ctx.targetDate}
 現在の天候: ${ctx.weather}（出来事の内容と矛盾しないように。無理に天候そのものを話題にする必要はない）
-
+${hintsSection}
 # 参照可能な企業・組織
 ${orgList || "(なし)"}
 

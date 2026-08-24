@@ -51,6 +51,44 @@ function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
+/**
+ * state_changes配列を検証・サニタイズする。管理画面からのAI補助作成・
+ * 完全手動作成でも、通常のイベントAI出力と同じルールで使い回す。
+ * extraAllowedPersonIds は「AIが今回新たに作成した人物」など、
+ * allowedPersonIds（既存人物）には含まれないが対象にしてよいIDを渡す。
+ */
+export function validateStateChanges(
+  raw: unknown,
+  allowedPersonIds: Set<number>,
+  allowedOrgIds: Set<number>,
+  extraAllowedPersonIds: Set<number> = new Set()
+): StateChange[] {
+  const stateChanges: StateChange[] = [];
+  if (!Array.isArray(raw)) return stateChanges;
+  for (const rawChange of raw.slice(0, MAX_STATE_CHANGES)) {
+    if (typeof rawChange !== "object" || rawChange === null) continue;
+    const c = rawChange as Record<string, unknown>;
+    if (!isFiniteNumber(c.target_id)) continue;
+
+    if (c.type === "person_status") {
+      const value = cleanText(c.value, 30);
+      if (ALLOWED_STATUS.has(value) && (allowedPersonIds.has(c.target_id) || extraAllowedPersonIds.has(c.target_id))) {
+        stateChanges.push({ type: "person_status", target_id: c.target_id, value });
+      }
+    } else if (c.type === "organization_status") {
+      const value = cleanText(c.value, 30);
+      if (ALLOWED_ORG_STATUS.has(value) && allowedOrgIds.has(c.target_id)) {
+        stateChanges.push({ type: "organization_status", target_id: c.target_id, value });
+      }
+    } else if (c.type === "economic_stock_price") {
+      if (isFiniteNumber(c.value) && c.value > 0 && allowedOrgIds.has(c.target_id)) {
+        stateChanges.push({ type: "economic_stock_price", target_id: c.target_id, value: c.value });
+      }
+    }
+  }
+  return stateChanges;
+}
+
 export function validateEventDraft(
   raw: unknown,
   allowedPersonIds: Set<number>,
@@ -103,30 +141,12 @@ export function validateEventDraft(
     }
   }
 
-  const stateChanges: StateChange[] = [];
-  if (Array.isArray(obj.state_changes)) {
-    for (const rawChange of obj.state_changes.slice(0, MAX_STATE_CHANGES)) {
-      if (typeof rawChange !== "object" || rawChange === null) continue;
-      const c = rawChange as Record<string, unknown>;
-      if (!isFiniteNumber(c.target_id)) continue;
-
-      if (c.type === "person_status") {
-        const value = cleanText(c.value, 30);
-        if (ALLOWED_STATUS.has(value) && (allowedPersonIds.has(c.target_id) || relatedPersonIds.includes(c.target_id))) {
-          stateChanges.push({ type: "person_status", target_id: c.target_id, value });
-        }
-      } else if (c.type === "organization_status") {
-        const value = cleanText(c.value, 30);
-        if (ALLOWED_ORG_STATUS.has(value) && allowedOrgIds.has(c.target_id)) {
-          stateChanges.push({ type: "organization_status", target_id: c.target_id, value });
-        }
-      } else if (c.type === "economic_stock_price") {
-        if (isFiniteNumber(c.value) && c.value > 0 && allowedOrgIds.has(c.target_id)) {
-          stateChanges.push({ type: "economic_stock_price", target_id: c.target_id, value: c.value });
-        }
-      }
-    }
-  }
+  const stateChanges = validateStateChanges(
+    obj.state_changes,
+    allowedPersonIds,
+    allowedOrgIds,
+    new Set(relatedPersonIds)
+  );
 
   return {
     event_type: eventType,

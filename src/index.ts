@@ -4,6 +4,8 @@ import {
   clearPeopleOrganization,
   createCity,
   createOrganization,
+  createPerson,
+  deleteNewsCascade,
   getCity,
   getEvent,
   getNews,
@@ -21,8 +23,11 @@ import {
   listNewsByCategory,
   listNewsForPerson,
   listOrganizations,
+  listOrganizationsByCity,
   listPeople,
+  listPeopleByCity,
   listPeopleByKana,
+  listRecentEvents,
   listRecentSimulationRuns,
   listRelationshipsForPerson,
   listTimeline,
@@ -59,6 +64,10 @@ import {
 } from "./views/mapZones";
 import { runDailySimulation } from "./simulation/runDailySimulation";
 import { findDueSlot, nextSlotUtcMillis, parseAutoPublishTimes } from "./simulation/schedule";
+import { callAiForJson } from "./simulation/ai";
+import { buildEventPrompt, buildNewsPrompt } from "./simulation/prompts";
+import { validateEventDraft, validateNewsDraft, validateStateChanges } from "./simulation/validate";
+import { applyStateChanges } from "./simulation/stateChanges";
 import type { EconomicDataRow, OrganizationRow, PersonRow, RelationshipRow } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -509,6 +518,280 @@ app.put("/api/admin/news/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+app.delete("/api/admin/news/:id", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const news = await getNews(c.env, id);
+  if (!news) return c.json({ error: "not found" }, 404);
+  await deleteNewsCascade(c.env, news.id, news.event_id);
+  return c.json({ ok: true });
+});
+
+function parseIdList(v: unknown, max: number): number[] {
+  if (!Array.isArray(v)) return [];
+  const out: number[] = [];
+  for (const x of v) {
+    if (typeof x === "number" && Number.isInteger(x) && !out.includes(x)) out.push(x);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function mergeById<T extends { id: number }>(base: T[], extra: T[]): T[] {
+  const map = new Map(base.map((x) => [x.id, x]));
+  for (const e of extra) map.set(e.id, e);
+  return Array.from(map.values());
+}
+
+// AI補助でニュースを作成する。関連人物・組織・ジャンル・キーワードは
+// すべて任意（空でも通常のシミュレーションと同じくAIが自律的に決める）。
+// 世界暦は進めず、現在の世界日付の出来事として追加する。
+app.post("/api/admin/news/generate", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  if (!c.env.AI) {
+    return c.json({ error: "Workers AIが利用できません。手動作成をご利用ください。" }, 503);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  const hintPersonIds = parseIdList(body?.relatedPersonIds, 6);
+  const hintOrgIds = parseIdList(body?.relatedOrgIds, 4);
+  const genre =
+    typeof body?.genre === "string" && (NEWS_CATEGORIES as readonly string[]).includes(body.genre)
+      ? body.genre
+      : null;
+  const keywords =
+    typeof body?.keywords === "string" && body.keywords.trim() ? body.keywords.trim().slice(0, 200) : null;
+
+  const world = await getWorld(c.env);
+  if (!world) return c.json({ error: "world not found" }, 500);
+
+  const hintOrgs = await getOrganizationsByIds(c.env, hintOrgIds);
+  const hintPeople = await getPeopleByIds(c.env, hintPersonIds);
+  const inferredCityId = hintOrgs[0]?.city_id ?? hintPeople[0]?.city_id ?? 1;
+  const city = await getCity(c.env, inferredCityId ?? 1);
+  if (!city) return c.json({ error: "city not found" }, 500);
+
+  const [orgsResult, peopleResult, recentEventsResult] = await Promise.all([
+    listOrganizationsByCity(c.env, city.id),
+    listPeopleByCity(c.env, city.id, 40),
+    listRecentEvents(c.env, 5),
+  ]);
+  // 指定された人物・組織がその都市の通常一覧に含まれない場合(別都市所属など)も
+  // 確実にAIへ渡し、参照・選択を許可する。
+  const organizations = mergeById(orgsResult.results ?? [], hintOrgs);
+  const people = mergeById(peopleResult.results ?? [], hintPeople);
+  const recentEvents = recentEventsResult.results ?? [];
+
+  const allowedPersonIds = new Set(people.map((p) => p.id));
+  const allowedOrgIds = new Set(organizations.map((o) => o.id));
+
+  const { system, user } = buildEventPrompt({
+    worldName: world.name,
+    cityName: city.name,
+    cityDescription: city.description ?? "",
+    population: city.population,
+    targetDate: world.current_date,
+    weather: world.weather,
+    organizations,
+    people,
+    recentEvents,
+    hints: { mustIncludePersonIds: hintPersonIds, mustIncludeOrgIds: hintOrgIds, genre, keywords },
+  });
+
+  const aiResult = await callAiForJson(c.env, c.env.AI_EVENT_MODEL, system, user);
+  if (!aiResult.ok) return c.json({ error: "イベントAIの呼び出しに失敗しました: " + aiResult.error }, 502);
+  const validated = validateEventDraft(aiResult.json, allowedPersonIds, allowedOrgIds);
+  if (!validated) return c.json({ error: "イベントAIの出力を検証できませんでした" }, 502);
+
+  const nowIso = () => new Date().toISOString();
+
+  // AIが提案した新規人物をDBへ作成する。
+  const createdPeopleIds: number[] = [];
+  const createdPeopleNames: string[] = [];
+  for (const np of validated.new_people) {
+    const newId = await createPerson(c.env, {
+      name: np.name,
+      name_kana: np.name_kana,
+      age: np.age,
+      gender: np.gender,
+      city_id: city.id,
+      occupation: np.occupation,
+      organization_id: np.organization_id,
+      money: 0,
+      status: "alive",
+      bio: null,
+    });
+    createdPeopleIds.push(newId);
+    createdPeopleNames.push(np.name);
+  }
+
+  // 管理者が明示的に選んだ人物・組織は、AIが出力に含めていなくても機械的に補完する。
+  const relatedPeopleIds = Array.from(
+    new Set([...validated.related_person_ids, ...createdPeopleIds, ...hintPersonIds.filter((id) => allowedPersonIds.has(id))])
+  );
+  const relatedOrgIds = Array.from(
+    new Set([...validated.related_organization_ids, ...hintOrgIds.filter((id) => allowedOrgIds.has(id))])
+  );
+  const relatedPeopleNames = [
+    ...people.filter((p) => relatedPeopleIds.includes(p.id)).map((p) => p.name),
+    ...createdPeopleNames,
+  ];
+  const relatedOrgNames = organizations.filter((o) => relatedOrgIds.includes(o.id)).map((o) => o.name);
+
+  const { system: newsSystem, user: newsUser } = buildNewsPrompt(
+    { cityName: city.name, targetDate: world.current_date },
+    {
+      event_type: validated.event_type,
+      summary: validated.summary,
+      detail: validated.detail,
+      involves_magic: validated.involves_magic,
+      relatedPeopleNames,
+      relatedOrgNames,
+    }
+  );
+  const newsAiResult = await callAiForJson(c.env, c.env.AI_NEWS_MODEL, newsSystem, newsUser);
+  let newsDraft = newsAiResult.ok ? validateNewsDraft(newsAiResult.json) : null;
+  if (!newsDraft) {
+    newsDraft = {
+      title: validated.summary,
+      body: `${validated.detail}\n\n関係者への取材によると、詳細は今後明らかになる見込み。`,
+      category: genre ?? "社会",
+    };
+  } else if (genre) {
+    newsDraft = { ...newsDraft, category: genre };
+  }
+
+  const appliedImpact = await applyStateChanges(c.env, validated.state_changes, world.current_date, relatedPeopleIds);
+
+  const eventInsert = await c.env.DB.prepare(
+    `INSERT INTO events
+       (world_date, event_type, location_city_id, summary, detail, related_people, related_organizations, world_state_impact, is_newsworthy, source, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+  )
+    .bind(
+      world.current_date,
+      validated.event_type,
+      city.id,
+      validated.summary,
+      validated.detail,
+      JSON.stringify(relatedPeopleIds),
+      JSON.stringify(relatedOrgIds),
+      JSON.stringify(appliedImpact),
+      "admin_ai_assisted",
+      nowIso()
+    )
+    .run();
+  const eventId = eventInsert.meta.last_row_id as number;
+
+  const newsInsert = await c.env.DB.prepare(
+    `INSERT INTO news
+       (title, body, published_at, occurred_at, category, related_people, related_organizations, related_city_id, event_id, generated_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      newsDraft.title,
+      newsDraft.body,
+      nowIso(),
+      world.current_date,
+      newsDraft.category,
+      JSON.stringify(relatedPeopleIds),
+      JSON.stringify(relatedOrgIds),
+      city.id,
+      eventId,
+      "admin_ai_assisted",
+      nowIso()
+    )
+    .run();
+  const newsId = newsInsert.meta.last_row_id as number;
+
+  await c.env.DB.prepare("UPDATE events SET news_id = ? WHERE id = ?").bind(newsId, eventId).run();
+  await c.env.DB.prepare("INSERT INTO timeline (world_date, event_id, headline, created_at) VALUES (?, ?, ?, ?)")
+    .bind(world.current_date, eventId, newsDraft.title, nowIso())
+    .run();
+
+  return c.json({ ok: true, eventId, newsId });
+});
+
+// 完全手動でのニュース作成。タイトル・本文・関連人物/組織・状態変化まですべて
+// 管理者が直接指定する（AIは使わない）。
+app.post("/api/admin/news/manual", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const title = typeof body?.title === "string" ? body.title.trim().slice(0, 120) : "";
+  const text = typeof body?.body === "string" ? body.body.trim().slice(0, 6000) : "";
+  const category = typeof body?.category === "string" ? body.category : "";
+  if (!title || !text) return c.json({ error: "title and body are required" }, 400);
+  if (!(NEWS_CATEGORIES as readonly string[]).includes(category)) {
+    return c.json({ error: "invalid category" }, 400);
+  }
+
+  const relatedPersonIdsRaw = parseIdList(body?.relatedPersonIds, 10);
+  const relatedOrgIdsRaw = parseIdList(body?.relatedOrgIds, 6);
+  const [relatedPeople, relatedOrgs] = await Promise.all([
+    getPeopleByIds(c.env, relatedPersonIdsRaw),
+    getOrganizationsByIds(c.env, relatedOrgIdsRaw),
+  ]);
+  const relatedPeopleIds = relatedPeople.map((p) => p.id);
+  const relatedOrgIds = relatedOrgs.map((o) => o.id);
+
+  const world = await getWorld(c.env);
+  if (!world) return c.json({ error: "world not found" }, 500);
+  const cityId = relatedOrgs[0]?.city_id ?? relatedPeople[0]?.city_id ?? 1;
+
+  const stateChanges = validateStateChanges(body?.stateChanges, new Set(relatedPeopleIds), new Set(relatedOrgIds));
+  const appliedImpact = await applyStateChanges(c.env, stateChanges, world.current_date, relatedPeopleIds);
+
+  const nowIso = () => new Date().toISOString();
+  const eventInsert = await c.env.DB.prepare(
+    `INSERT INTO events
+       (world_date, event_type, location_city_id, summary, detail, related_people, related_organizations, world_state_impact, is_newsworthy, source, created_at)
+     VALUES (?, 'manual', ?, ?, ?, ?, ?, ?, 1, 'admin_manual', ?)`
+  )
+    .bind(
+      world.current_date,
+      cityId,
+      title,
+      text.slice(0, 600),
+      JSON.stringify(relatedPeopleIds),
+      JSON.stringify(relatedOrgIds),
+      JSON.stringify(appliedImpact),
+      nowIso()
+    )
+    .run();
+  const eventId = eventInsert.meta.last_row_id as number;
+
+  const newsInsert = await c.env.DB.prepare(
+    `INSERT INTO news
+       (title, body, published_at, occurred_at, category, related_people, related_organizations, related_city_id, event_id, generated_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'admin_manual', ?)`
+  )
+    .bind(
+      title,
+      text,
+      nowIso(),
+      world.current_date,
+      category,
+      JSON.stringify(relatedPeopleIds),
+      JSON.stringify(relatedOrgIds),
+      cityId,
+      eventId,
+      nowIso()
+    )
+    .run();
+  const newsId = newsInsert.meta.last_row_id as number;
+
+  await c.env.DB.prepare("UPDATE events SET news_id = ? WHERE id = ?").bind(newsId, eventId).run();
+  await c.env.DB.prepare("INSERT INTO timeline (world_date, event_id, headline, created_at) VALUES (?, ?, ?, ?)")
+    .bind(world.current_date, eventId, title, nowIso())
+    .run();
+
+  return c.json({ ok: true, eventId, newsId });
+});
+
 // ---- 管理画面: 人物編集 ----
 
 app.get("/api/admin/people-list", async (c) => {
@@ -581,6 +864,54 @@ app.put("/api/admin/people/:id", async (c) => {
     bio,
   });
   return c.json({ ok: true });
+});
+
+app.post("/api/admin/people", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: "invalid body" }, 400);
+
+  const name = typeof body.name === "string" ? body.name.trim().slice(0, 40) : "";
+  if (!name) return c.json({ error: "name is required" }, 400);
+  const nameKanaRaw = typeof body.name_kana === "string" ? body.name_kana.trim().slice(0, 60) : "";
+  const nameKana = nameKanaRaw && /^[ぁ-ゖゝ-ゟー・\s]+$/.test(nameKanaRaw) ? nameKanaRaw : null;
+  const age =
+    typeof body.age === "number" && Number.isFinite(body.age) && body.age >= 0 && body.age <= 300
+      ? Math.round(body.age)
+      : null;
+  const gender = typeof body.gender === "string" && body.gender.trim() ? body.gender.trim().slice(0, 20) : null;
+  const occupation =
+    typeof body.occupation === "string" && body.occupation.trim() ? body.occupation.trim().slice(0, 40) : null;
+  const organizationId =
+    typeof body.organization_id === "number" && Number.isInteger(body.organization_id) ? body.organization_id : null;
+  const money = typeof body.money === "number" && Number.isFinite(body.money) ? Math.max(0, Math.round(body.money)) : 0;
+  const status = typeof body.status === "string" && (PERSON_STATUSES as readonly string[]).includes(body.status)
+    ? body.status
+    : "alive";
+  const bio = typeof body.bio === "string" && body.bio.trim() ? body.bio.trim().slice(0, 400) : null;
+  const cityIdRaw = typeof body.city_id === "number" && Number.isInteger(body.city_id) ? body.city_id : 1;
+
+  if (organizationId !== null) {
+    const org = await getOrganization(c.env, organizationId);
+    if (!org) return c.json({ error: "organization_id does not exist" }, 400);
+  }
+  const city = await getCity(c.env, cityIdRaw);
+  if (!city) return c.json({ error: "invalid city_id" }, 400);
+
+  const id = await createPerson(c.env, {
+    name,
+    name_kana: nameKana,
+    age,
+    gender,
+    city_id: city.id,
+    occupation,
+    organization_id: organizationId,
+    money,
+    status,
+    bio,
+  });
+  return c.json({ ok: true, id });
 });
 
 // ---- 管理画面: 経済コントロール ----

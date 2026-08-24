@@ -14,6 +14,7 @@ import { callAiForJson } from "./ai";
 import { buildEventPrompt, buildNewsPrompt } from "./prompts";
 import { validateEventDraft, validateNewsDraft, type ValidatedEventDraft, type ValidatedNewsDraft } from "./validate";
 import { generateFallbackEventAndNews } from "./fallback";
+import { applyStateChanges } from "./stateChanges";
 
 export interface SimulationResult {
   skipped: boolean;
@@ -171,44 +172,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       .map((o) => o.name);
 
     // 世界状態への影響を適用する。
-    const appliedImpact: Record<string, unknown>[] = [];
-    for (const change of eventDraft.state_changes) {
-      if (change.type === "person_status") {
-        if (relatedPeopleIds.includes(change.target_id)) {
-          await env.DB.prepare("UPDATE people SET status = ?, updated_at = ? WHERE id = ?")
-            .bind(change.value, now(), change.target_id)
-            .run();
-          appliedImpact.push(change);
-        }
-      } else if (change.type === "organization_status") {
-        await env.DB.prepare("UPDATE organizations SET status = ?, updated_at = ? WHERE id = ?")
-          .bind(change.value, now(), change.target_id)
-          .run();
-        // 倒産した場合、そこに勤めていた人物を無所属に戻す(管理画面からの倒産と同じ扱い)。
-        if (change.value === "bankrupt") {
-          await env.DB.prepare("UPDATE people SET organization_id = NULL, updated_at = ? WHERE organization_id = ?")
-            .bind(now(), change.target_id)
-            .run();
-        }
-        appliedImpact.push(change);
-      } else if (change.type === "economic_stock_price") {
-        const prev = await previousEconomicValue(env, change.target_id, "stock_price", targetDate);
-        let value = change.value;
-        if (prev) {
-          const min = prev.value * 0.5;
-          const max = prev.value * 2;
-          value = Math.min(Math.max(value, min), max);
-        } else {
-          value = Math.min(value, 1_000_000);
-        }
-        await env.DB.prepare(
-          "INSERT INTO economic_data (world_date, organization_id, metric, value, created_at) VALUES (?, ?, 'stock_price', ?, ?)"
-        )
-          .bind(targetDate, change.target_id, value, now())
-          .run();
-        appliedImpact.push({ ...change, applied_value: value });
-      }
-    }
+    const appliedImpact = await applyStateChanges(env, eventDraft.state_changes, targetDate, relatedPeopleIds);
 
     // AIが株価変動を提案しなかった場合でも、記事に登場した上場企業には
     // 小さな自動変動を与え、「ニュースがあったのに経済がまったく動かない」
