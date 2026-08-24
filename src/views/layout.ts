@@ -1,7 +1,7 @@
 import { html, raw, RawHtml } from "../utils/html";
 
 const NAV_ITEMS = [
-  { href: "/", label: "ニュース" },
+  { href: "/news", label: "ニュース" },
   { href: "/world", label: "世界" },
   { href: "/people", label: "人物" },
   { href: "/timeline", label: "年表" },

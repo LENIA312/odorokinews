@@ -18,6 +18,8 @@ export interface WorldRow {
   name_en: string | null;
   origin_story: string;
   current_date: string;
+  auto_publish_times: string;
+  last_auto_publish_slot: string | null;
   created_at: string;
   updated_at: string;
 }

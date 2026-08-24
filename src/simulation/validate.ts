@@ -2,7 +2,7 @@
 // 「存在しない人物/企業の参照」「固定設定の変更」などを検出し、
 // 不正な部分だけを取り除いて安全な構造化データにする（docs.md 21章）。
 
-import { NEWS_CATEGORIES } from "../constants";
+import { NEWS_CATEGORIES, ORG_STATUSES, PERSON_STATUSES } from "../constants";
 
 export interface NewPersonDraft {
   name: string;
@@ -39,8 +39,8 @@ const MAX_BODY = 4000;
 const MAX_RELATED_PEOPLE = 6;
 const MAX_RELATED_ORGS = 4;
 const MAX_STATE_CHANGES = 6;
-const ALLOWED_STATUS = new Set(["alive", "injured", "hospitalized", "deceased", "celebrating", "under_investigation"]);
-const ALLOWED_ORG_STATUS = new Set(["active", "expanding", "under_investigation", "recovering", "celebrating"]);
+const ALLOWED_STATUS = new Set<string>(PERSON_STATUSES);
+const ALLOWED_ORG_STATUS = new Set<string>(ORG_STATUSES);
 
 function cleanText(v: unknown, max: number): string {
   if (typeof v !== "string") return "";

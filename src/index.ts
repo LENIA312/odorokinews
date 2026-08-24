@@ -9,6 +9,8 @@ import {
   getPeopleByIds,
   getOrganizationsByIds,
   getWorld,
+  insertPriceIndex,
+  insertStockPrice,
   latestEconomicDataByOrg,
   latestPriceIndex,
   listCities,
@@ -22,9 +24,14 @@ import {
   listRelationshipsForPerson,
   listTimeline,
   parseIdArray,
+  searchPeopleAdmin,
+  updateNews,
+  updateOrganizationAdmin,
+  updatePerson,
+  updateWorldAutoPublishTimes,
 } from "./db/queries";
 import { html } from "./utils/html";
-import { NEWS_CATEGORIES } from "./constants";
+import { NEWS_CATEGORIES, ORG_STATUSES, PERSON_STATUSES } from "./constants";
 import { page } from "./views/layout";
 import { worldbar } from "./views/components";
 import { newsListSection, categoryTabs } from "./views/newsList";
@@ -39,10 +46,8 @@ import { adminDashboardPage } from "./views/admin";
 import { mapView } from "./views/map";
 import { assignPersonZones, ORG_ZONE_BY_ID } from "./views/mapZones";
 import { runDailySimulation } from "./simulation/runDailySimulation";
+import { findDueSlot, parseAutoPublishTimes } from "./simulation/schedule";
 import type { EconomicDataRow, OrganizationRow, PersonRow, RelationshipRow } from "./types";
-
-// wrangler.jsonc の triggers.crons と手動で同期させる表示用文字列。
-const CRON_SCHEDULE_DISPLAY = ["10:00 JST", "22:00 JST"];
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -71,7 +76,7 @@ app.get("/news", async (c) => {
   return c.html(
     page({
       title: category ? `ニュース - ${category}` : "ニュース一覧",
-      activePath: "/",
+      activePath: "/news",
       worldbar: world ? worldbar(world) : undefined,
       body: html`${categoryTabs(category)}${newsListSection(category ?? "すべてのニュース", news.results ?? [])}`,
     }).value
@@ -91,7 +96,7 @@ app.get("/news/:id", async (c) => {
   if (!Number.isInteger(id)) return c.notFound();
   const news = await getNews(c.env, id);
   if (!news) {
-    return c.html(page({ title: "見つかりません", activePath: "/", body: notFoundView() }).value, 404);
+    return c.html(page({ title: "見つかりません", activePath: "/news", body: notFoundView() }).value, 404);
   }
 
   const world = await getWorld(c.env);
@@ -102,7 +107,7 @@ app.get("/news/:id", async (c) => {
   return c.html(
     page({
       title: news.title,
-      activePath: "/",
+      activePath: "/news",
       worldbar: world ? worldbar(world) : undefined,
       body: newsDetailView(news, city?.name ?? null, relatedPeople, relatedOrgs),
     }).value
@@ -300,19 +305,241 @@ app.get("/api/admin/status", async (c) => {
     world: world ? { name: world.name, current_date: world.current_date, updated_at: world.updated_at } : null,
     recentRuns: runs.results ?? [],
     recentNews: news.results ?? [],
-    schedule: CRON_SCHEDULE_DISPLAY,
+    schedule: world ? parseAutoPublishTimes(world.auto_publish_times).map((t) => `${t} JST`) : [],
   });
+});
+
+// ---- 管理画面: 自動配信時刻の設定 ----
+
+app.get("/api/admin/settings", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const world = await getWorld(c.env);
+  if (!world) return c.json({ error: "world not found" }, 500);
+  return c.json({ autoPublishTimes: parseAutoPublishTimes(world.auto_publish_times) });
+});
+
+app.put("/api/admin/settings", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const times = body && Array.isArray(body.autoPublishTimes) ? body.autoPublishTimes : null;
+  if (!times || times.length === 0 || times.length > 8) {
+    return c.json({ error: "autoPublishTimes must be an array of 1-8 HH:MM strings" }, 400);
+  }
+  const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
+  if (!times.every((t: unknown) => typeof t === "string" && timeRe.test(t))) {
+    return c.json({ error: "each time must match HH:MM (24h)" }, 400);
+  }
+  await updateWorldAutoPublishTimes(c.env, JSON.stringify(times));
+  return c.json({ ok: true, autoPublishTimes: times });
+});
+
+// ---- 管理画面: ニュース編集 ----
+
+app.get("/api/admin/news-list", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const news = await listNews(c.env, 100);
+  return c.json({ news: (news.results ?? []).map((n) => ({ id: n.id, title: n.title, category: n.category, published_at: n.published_at })) });
+});
+
+app.get("/api/admin/news/:id", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const news = await getNews(c.env, id);
+  if (!news) return c.json({ error: "not found" }, 404);
+  return c.json({ id: news.id, title: news.title, body: news.body, category: news.category });
+});
+
+app.put("/api/admin/news/:id", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const body = await c.req.json().catch(() => null);
+  const title = typeof body?.title === "string" ? body.title.trim().slice(0, 120) : "";
+  const text = typeof body?.body === "string" ? body.body.trim().slice(0, 6000) : "";
+  const category = typeof body?.category === "string" ? body.category : "";
+  if (!title || !text) return c.json({ error: "title and body are required" }, 400);
+  if (!(NEWS_CATEGORIES as readonly string[]).includes(category)) {
+    return c.json({ error: "invalid category" }, 400);
+  }
+  await updateNews(c.env, id, { title, body: text, category });
+  return c.json({ ok: true });
+});
+
+// ---- 管理画面: 人物編集 ----
+
+app.get("/api/admin/people-list", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const q = c.req.query("q") ?? "";
+  const people = q ? await searchPeopleAdmin(c.env, q, 50) : await listPeopleByKana(c.env, 50);
+  return c.json({
+    people: (people.results ?? []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      name_kana: p.name_kana,
+      occupation: p.occupation,
+      status: p.status,
+    })),
+  });
+});
+
+app.get("/api/admin/people/:id", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const person = await getPerson(c.env, id);
+  if (!person) return c.json({ error: "not found" }, 404);
+  return c.json(person);
+});
+
+app.put("/api/admin/people/:id", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: "invalid body" }, 400);
+
+  const name = typeof body.name === "string" ? body.name.trim().slice(0, 40) : "";
+  if (!name) return c.json({ error: "name is required" }, 400);
+  const nameKanaRaw = typeof body.name_kana === "string" ? body.name_kana.trim().slice(0, 60) : "";
+  const nameKana = nameKanaRaw && /^[ぁ-ゖゝ-ゟー・\s]+$/.test(nameKanaRaw) ? nameKanaRaw : null;
+  const age =
+    typeof body.age === "number" && Number.isFinite(body.age) && body.age >= 0 && body.age <= 300
+      ? Math.round(body.age)
+      : null;
+  const gender = typeof body.gender === "string" && body.gender.trim() ? body.gender.trim().slice(0, 20) : null;
+  const occupation =
+    typeof body.occupation === "string" && body.occupation.trim() ? body.occupation.trim().slice(0, 40) : null;
+  const organizationId =
+    typeof body.organization_id === "number" && Number.isInteger(body.organization_id) ? body.organization_id : null;
+  const money = typeof body.money === "number" && Number.isFinite(body.money) ? Math.max(0, Math.round(body.money)) : 0;
+  const status = typeof body.status === "string" && (PERSON_STATUSES as readonly string[]).includes(body.status)
+    ? body.status
+    : "alive";
+  const bio = typeof body.bio === "string" && body.bio.trim() ? body.bio.trim().slice(0, 400) : null;
+
+  if (organizationId !== null) {
+    const org = await getOrganization(c.env, organizationId);
+    if (!org) return c.json({ error: "organization_id does not exist" }, 400);
+  }
+
+  await updatePerson(c.env, id, {
+    name,
+    name_kana: nameKana,
+    age,
+    gender,
+    occupation,
+    organization_id: organizationId,
+    money,
+    status,
+    bio,
+  });
+  return c.json({ ok: true });
+});
+
+// ---- 管理画面: 経済コントロール ----
+
+app.get("/api/admin/economy-list", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const [orgs, latest, priceIndex] = await Promise.all([
+    listOrganizations(c.env),
+    latestEconomicDataByOrg(c.env),
+    latestPriceIndex(c.env),
+  ]);
+  const latestByOrg = new Map<number, number>();
+  for (const row of latest.results ?? []) {
+    if (row.metric === "stock_price" && row.organization_id) latestByOrg.set(row.organization_id, row.value);
+  }
+  return c.json({
+    organizations: (orgs.results ?? []).map((o) => ({
+      id: o.id,
+      name: o.name,
+      kind: o.kind,
+      status: o.status,
+      description: o.description,
+      stockPrice: latestByOrg.get(o.id) ?? null,
+    })),
+    priceIndex: priceIndex?.value ?? null,
+  });
+});
+
+app.put("/api/admin/organizations/:id", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  const body = await c.req.json().catch(() => null);
+  const status = typeof body?.status === "string" && (ORG_STATUSES as readonly string[]).includes(body.status)
+    ? body.status
+    : null;
+  if (!status) return c.json({ error: "invalid status" }, 400);
+  const description =
+    typeof body?.description === "string" && body.description.trim() ? body.description.trim().slice(0, 200) : null;
+  await updateOrganizationAdmin(c.env, id, { status, description });
+  return c.json({ ok: true });
+});
+
+app.post("/api/admin/economy/stock", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const organizationId = typeof body?.organization_id === "number" ? body.organization_id : null;
+  const value = typeof body?.value === "number" && Number.isFinite(body.value) ? body.value : null;
+  if (!organizationId || value === null || value <= 0 || value > 10_000_000) {
+    return c.json({ error: "organization_id and a positive value (<=10,000,000) are required" }, 400);
+  }
+  const org = await getOrganization(c.env, organizationId);
+  if (!org || org.kind !== "company") return c.json({ error: "organization must be an existing company" }, 400);
+  const world = await getWorld(c.env);
+  if (!world) return c.json({ error: "world not found" }, 500);
+  await insertStockPrice(c.env, organizationId, world.current_date, value);
+  return c.json({ ok: true });
+});
+
+app.put("/api/admin/economy/price-index", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+  const body = await c.req.json().catch(() => null);
+  const value = typeof body?.value === "number" && Number.isFinite(body.value) ? body.value : null;
+  if (value === null || value <= 0 || value > 100_000) {
+    return c.json({ error: "a positive value (<=100,000) is required" }, 400);
+  }
+  const world = await getWorld(c.env);
+  if (!world) return c.json({ error: "world not found" }, 500);
+  await insertPriceIndex(c.env, world.current_date, value);
+  return c.json({ ok: true });
 });
 
 app.notFound((c) => c.html(page({ title: "見つかりません", activePath: "/", body: notFoundView() }).value, 404));
 
 export default {
   fetch: app.fetch,
+  // 10分おきに呼ばれる。world.auto_publish_times(JST)で設定された時刻を
+  // まだ過ぎていなければ何もしない。管理画面から設定を変更すれば、
+  // 再デプロイなしに配信時刻を変えられる。
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
-      runDailySimulation(env).catch((err) => {
-        console.error("daily simulation failed", err);
-      })
+      (async () => {
+        const world = await getWorld(env);
+        if (!world) return;
+        const slot = findDueSlot(new Date(), world.auto_publish_times, world.last_auto_publish_slot);
+        if (!slot) return;
+        try {
+          await runDailySimulation(env);
+          await env.DB.prepare("UPDATE world SET last_auto_publish_slot = ? WHERE id = 1").bind(slot).run();
+        } catch (err) {
+          console.error("daily simulation failed", err);
+        }
+      })()
     );
   },
 };

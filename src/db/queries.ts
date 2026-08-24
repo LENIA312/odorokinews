@@ -101,19 +101,19 @@ export function listRecentSimulationRuns(env: Env, limit = 14): Promise<D1Result
     .all<SimulationRunRow>();
 }
 
+// economic_dataは追記のみ(更新・削除なし)のため、idの大小がそのまま
+// 挿入順=新しさを表す。同一world_dateに複数回の更新があっても
+// MAX(id)なら常に最後に挿入された値を正しく拾える。
 export function latestEconomicDataByOrg(env: Env): Promise<D1Result<EconomicDataRow>> {
   return env.DB.prepare(
     `SELECT ed.*
      FROM economic_data ed
      INNER JOIN (
-       SELECT organization_id, metric, MAX(world_date) AS max_date
+       SELECT organization_id, metric, MAX(id) AS max_id
        FROM economic_data
        WHERE organization_id IS NOT NULL
        GROUP BY organization_id, metric
-     ) latest
-       ON ed.organization_id = latest.organization_id
-      AND ed.metric = latest.metric
-      AND ed.world_date = latest.max_date
+     ) latest ON ed.id = latest.max_id
      ORDER BY ed.organization_id ASC`
   ).all<EconomicDataRow>();
 }
@@ -122,7 +122,7 @@ export function latestPriceIndex(env: Env): Promise<EconomicDataRow | null> {
   return env.DB.prepare(
     `SELECT * FROM economic_data
      WHERE organization_id IS NULL AND metric = 'price_index'
-     ORDER BY world_date DESC LIMIT 1`
+     ORDER BY id DESC LIMIT 1`
   ).first<EconomicDataRow>();
 }
 
@@ -135,7 +135,7 @@ export function previousEconomicValue(
   return env.DB.prepare(
     `SELECT * FROM economic_data
      WHERE organization_id = ? AND metric = ? AND world_date < ?
-     ORDER BY world_date DESC LIMIT 1`
+     ORDER BY world_date DESC, id DESC LIMIT 1`
   )
     .bind(organizationId, metric, beforeDate)
     .first<EconomicDataRow>();
@@ -168,4 +168,99 @@ export async function getOrganizationsByIds(env: Env, ids: number[]): Promise<Or
     .bind(...ids)
     .all<OrganizationRow>();
   return result.results ?? [];
+}
+
+// ---- 管理画面用の更新系クエリ ----
+
+export function updateWorldAutoPublishTimes(env: Env, timesJson: string): Promise<D1Result> {
+  return env.DB.prepare("UPDATE world SET auto_publish_times = ?, updated_at = ? WHERE id = 1")
+    .bind(timesJson, new Date().toISOString())
+    .run();
+}
+
+export interface NewsUpdateFields {
+  title: string;
+  body: string;
+  category: string;
+}
+
+export function updateNews(env: Env, id: number, fields: NewsUpdateFields): Promise<D1Result> {
+  return env.DB.prepare("UPDATE news SET title = ?, body = ?, category = ? WHERE id = ?")
+    .bind(fields.title, fields.body, fields.category, id)
+    .run();
+}
+
+export interface PersonUpdateFields {
+  name: string;
+  name_kana: string | null;
+  age: number | null;
+  gender: string | null;
+  occupation: string | null;
+  organization_id: number | null;
+  money: number;
+  status: string;
+  bio: string | null;
+}
+
+export function updatePerson(env: Env, id: number, fields: PersonUpdateFields): Promise<D1Result> {
+  return env.DB.prepare(
+    `UPDATE people
+     SET name = ?, name_kana = ?, age = ?, gender = ?, occupation = ?,
+         organization_id = ?, money = ?, status = ?, bio = ?, updated_at = ?
+     WHERE id = ?`
+  )
+    .bind(
+      fields.name,
+      fields.name_kana,
+      fields.age,
+      fields.gender,
+      fields.occupation,
+      fields.organization_id,
+      fields.money,
+      fields.status,
+      fields.bio,
+      new Date().toISOString(),
+      id
+    )
+    .run();
+}
+
+export function updateOrganizationAdmin(
+  env: Env,
+  id: number,
+  fields: { status: string; description: string | null }
+): Promise<D1Result> {
+  return env.DB.prepare("UPDATE organizations SET status = ?, description = ?, updated_at = ? WHERE id = ?")
+    .bind(fields.status, fields.description, new Date().toISOString(), id)
+    .run();
+}
+
+export function insertStockPrice(
+  env: Env,
+  organizationId: number,
+  worldDate: string,
+  value: number
+): Promise<D1Result> {
+  return env.DB.prepare(
+    "INSERT INTO economic_data (world_date, organization_id, metric, value, created_at) VALUES (?, ?, 'stock_price', ?, ?)"
+  )
+    .bind(worldDate, organizationId, value, new Date().toISOString())
+    .run();
+}
+
+export function insertPriceIndex(env: Env, worldDate: string, value: number): Promise<D1Result> {
+  return env.DB.prepare(
+    "INSERT INTO economic_data (world_date, organization_id, metric, value, created_at) VALUES (?, NULL, 'price_index', ?, ?)"
+  )
+    .bind(worldDate, value, new Date().toISOString())
+    .run();
+}
+
+export function searchPeopleAdmin(env: Env, query: string, limit = 50): Promise<D1Result<PersonRow>> {
+  const like = `%${query}%`;
+  return env.DB.prepare(
+    `SELECT * FROM people WHERE name LIKE ? OR name_kana LIKE ? ORDER BY (name_kana IS NULL) ASC, name_kana ASC LIMIT ?`
+  )
+    .bind(like, like, limit)
+    .all<PersonRow>();
 }
