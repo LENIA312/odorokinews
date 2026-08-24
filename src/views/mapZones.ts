@@ -12,6 +12,9 @@ export interface Zone {
   kind: "org" | "residential" | "other";
 }
 
+// 全ての移動はここを経由する「町の中心交差点」。道が集まる基点として使う。
+export const HUB = { x: 440, y: 250 };
+
 export const ZONES: Zone[] = [
   { id: "city_hall", label: "ダイナン市役所", x: 400, y: 220, kind: "org" },
   { id: "soukai_hq", label: "蒼海重工本社", x: 560, y: 150, kind: "org" },
