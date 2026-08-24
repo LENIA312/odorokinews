@@ -1,5 +1,5 @@
 import { html, raw, RawHtml } from "../utils/html";
-import { HUB, ZONES, type Zone } from "./mapZones";
+import { GRID_COLS, GRID_ROWS, ZONES, type Zone } from "./mapZones";
 
 const ZONE_COLOR: Record<Zone["kind"], string> = {
   org: "#5b7fd9",
@@ -85,20 +85,71 @@ function zoneIcon(z: Zone): string {
   return stall(-16, "#d9855f") + stall(0, color) + stall(16, "#d9855f");
 }
 
-function zoneMarkers(): string {
-  var roads = ZONES.map(function (z) {
-    return (
-      '<line x1="' + z.x + '" y1="' + z.y + '" x2="' + HUB.x + '" y2="' + HUB.y +
-      '" stroke="#d8cfb8" stroke-width="7" stroke-linecap="round"></line>' +
-      '<line x1="' + z.x + '" y1="' + z.y + '" x2="' + HUB.x + '" y2="' + HUB.y +
+const MAP_LEFT = GRID_COLS[0];
+const MAP_RIGHT = GRID_COLS[GRID_COLS.length - 1];
+const MAP_TOP = GRID_ROWS[0];
+const MAP_BOTTOM = GRID_ROWS[GRID_ROWS.length - 1];
+
+// 街並みっぽさを底上げする装飾（下町の色分け・海岸線・方位記号・縮尺表記・外枠）。
+function decorations(): string {
+  const downtown =
+    '<rect x="' + (MAP_LEFT - 55) + '" y="' + (MAP_TOP - 45) + '" width="' + (MAP_RIGHT - MAP_LEFT + 110) +
+    '" height="' + (MAP_BOTTOM - MAP_TOP + 90) + '" rx="18" fill="#ece3cd" opacity="0.6"></rect>';
+
+  const coastline =
+    '<path d="M0,430 C120,410 200,455 340,435 C480,415 560,450 680,430 C760,418 800,428 800,428 L800,480 L0,480 Z" ' +
+    'fill="#bcd8e0" opacity="0.55"></path>' +
+    '<path d="M0,430 C120,410 200,455 340,435 C480,415 560,450 680,430 C760,418 800,428 800,428" ' +
+    'fill="none" stroke="#9cc0cb" stroke-width="2"></path>';
+
+  const compass =
+    '<g transform="translate(755,55)">' +
+    '<circle r="26" fill="#faf7ee" stroke="#c9bd9c" stroke-width="1.5"></circle>' +
+    '<polygon points="0,-18 5,3 0,-4 -5,3" fill="#9c2b2b"></polygon>' +
+    '<text x="0" y="-22" text-anchor="middle" font-size="10" fill="#4a473c" font-family="Georgia, serif">N</text>' +
+    "</g>";
+
+  const scaleBar =
+    '<g transform="translate(45,455)">' +
+    '<line x1="0" y1="0" x2="80" y2="0" stroke="#6b6650" stroke-width="2"></line>' +
+    '<line x1="0" y1="-4" x2="0" y2="4" stroke="#6b6650" stroke-width="2"></line>' +
+    '<line x1="80" y1="-4" x2="80" y2="4" stroke="#6b6650" stroke-width="2"></line>' +
+    '<text x="40" y="-8" text-anchor="middle" font-size="9" fill="#6b6650" font-family="Georgia, serif">およそ500m</text>' +
+    "</g>";
+
+  const frame =
+    '<rect x="6" y="6" width="788" height="468" fill="none" stroke="#c9bd9c" stroke-width="2"></rect>' +
+    '<rect x="10" y="10" width="780" height="460" fill="none" stroke="#c9bd9c" stroke-width="1"></rect>';
+
+  return downtown + coastline + compass + scaleBar + frame;
+}
+
+// 縦横5×3の格子として道路網を描く（1点に集約するハブ方式ではなく、実際の街路っぽい網目にする）。
+function roadGrid(): string {
+  const hRoads = GRID_ROWS.map(
+    (y) =>
+      '<line x1="' + MAP_LEFT + '" y1="' + y + '" x2="' + MAP_RIGHT + '" y2="' + y +
+      '" stroke="#d8cfb8" stroke-width="8" stroke-linecap="round"></line>' +
+      '<line x1="' + MAP_LEFT + '" y1="' + y + '" x2="' + MAP_RIGHT + '" y2="' + y +
       '" stroke="#efe9d8" stroke-width="1.6" stroke-dasharray="6 7" stroke-linecap="round"></line>'
-    );
-  }).join("");
+  ).join("");
 
-  var hubMarker =
-    '<circle cx="' + HUB.x + '" cy="' + HUB.y + '" r="16" fill="#e7e0cc"></circle>' +
-    '<circle cx="' + HUB.x + '" cy="' + HUB.y + '" r="16" fill="none" stroke="#c9bd9c" stroke-width="1.5"></circle>';
+  const vRoads = GRID_COLS.map(
+    (x) =>
+      '<line x1="' + x + '" y1="' + MAP_TOP + '" x2="' + x + '" y2="' + MAP_BOTTOM +
+      '" stroke="#d8cfb8" stroke-width="8" stroke-linecap="round"></line>' +
+      '<line x1="' + x + '" y1="' + MAP_TOP + '" x2="' + x + '" y2="' + MAP_BOTTOM +
+      '" stroke="#efe9d8" stroke-width="1.6" stroke-dasharray="6 7" stroke-linecap="round"></line>'
+  ).join("");
 
+  const intersections = GRID_ROWS.flatMap((y) =>
+    GRID_COLS.map((x) => '<circle cx="' + x + '" cy="' + y + '" r="3" fill="#c9bd9c"></circle>')
+  ).join("");
+
+  return hRoads + vRoads + intersections;
+}
+
+function zoneMarkers(): string {
   var zones = ZONES.map(function (z) {
     return (
       '<g id="zone-' + z.id + '" transform="translate(' + z.x + "," + z.y + ')">' +
@@ -111,7 +162,11 @@ function zoneMarkers(): string {
     );
   }).join("");
 
-  return '<g id="roadsLayer">' + roads + hubMarker + "</g>" + '<g id="zonesLayer">' + zones + "</g>";
+  return (
+    '<g id="decorationsLayer">' + decorations() + "</g>" +
+    '<g id="roadsLayer">' + roadGrid() + "</g>" +
+    '<g id="zonesLayer">' + zones + "</g>"
+  );
 }
 
 const STYLE_EXTRA = [
@@ -133,12 +188,11 @@ const STYLE_EXTRA = [
 export function mapView(): RawHtml {
   // <script>タグ内に埋め込むため、</script> 等でタグが閉じられないように</の出現を無害化する。
   const zonesJson = JSON.stringify(ZONES).replace(/</g, "\\u003c");
-  const hubJson = JSON.stringify(HUB).replace(/</g, "\\u003c");
 
   return html`<h2 class="section-title">街の様子</h2>
     <div class="empty" style="text-align:left;padding:0 0 1rem">
-      職業・勤務先から自動的に「自宅」と「主な行き先」を割り当て、時間帯に応じて移動する様子を
-      模式的に表示しています。実際の行動記録ではなく、演出用のイメージです。
+      職業・勤務先から自動的に「自宅」と「主な行き先」を割り当て、時間帯に応じて道路網に沿って
+      移動する様子を模式的に表示しています。実際の行動記録ではなく、演出用のイメージです。
     </div>
     <style>${raw(STYLE_EXTRA)}</style>
     <div id="clock">読み込み中...</div>
@@ -160,7 +214,6 @@ export function mapView(): RawHtml {
     <div id="personTip">人物の点をクリックすると名前が表示されます。施設が赤い枠で囲まれている場合は調査中、金色は好調・拡大中を表します。</div>
     <script>
       window.__ZONES__ = ${raw(zonesJson)};
-      window.__HUB__ = ${raw(hubJson)};
     </script>
     <script>${raw(CLIENT_SCRIPT)}</script>`;
 }
@@ -169,7 +222,6 @@ export function mapView(): RawHtml {
 const CLIENT_SCRIPT = [
   "(function () {",
   "  var ZONES = window.__ZONES__ || [];",
-  "  var HUB = window.__HUB__ || { x: 400, y: 240 };",
   "  var zoneById = {};",
   "  ZONES.forEach(function (z) { zoneById[z.id] = z; });",
   "",
@@ -206,15 +258,22 @@ const CLIENT_SCRIPT = [
   "    };",
   "  }",
   "",
-  "  // 家↔勤務先は必ず町の中心(HUB)を経由する2区間の経路として移動する。",
+  "  // 道路網に沿ったLの字経路（出発地の行を進んでから目的地の列を進む）で移動する。",
+  "  // 家と勤務先が同じ行/列なら自然に直線移動になる。",
   "  function pathPosition(fromX, fromY, toX, toY, t) {",
   "    var e = easeInOut(t);",
-  "    if (e < 0.5) {",
-  "      var t1 = e * 2;",
-  "      return { x: lerp(fromX, HUB.x, t1), y: lerp(fromY, HUB.y, t1) };",
+  "    var cornerX = toX, cornerY = fromY;",
+  "    var legDist1 = Math.abs(cornerX - fromX);",
+  "    var legDist2 = Math.abs(toY - cornerY);",
+  "    var total = legDist1 + legDist2;",
+  "    if (total === 0) return { x: toX, y: toY };",
+  "    var split = legDist1 / total;",
+  "    if (e < split) {",
+  "      var t1 = split === 0 ? 1 : e / split;",
+  "      return { x: lerp(fromX, cornerX, t1), y: fromY };",
   "    }",
-  "    var t2 = (e - 0.5) * 2;",
-  "    return { x: lerp(HUB.x, toX, t2), y: lerp(HUB.y, toY, t2) };",
+  "    var t2 = split === 1 ? 1 : (e - split) / (1 - split);",
+  "    return { x: cornerX, y: lerp(cornerY, toY, t2) };",
   "  }",
   "",
   "  // 0-24のシミュレーション上の時刻から、人物ごとの現在位置を計算する。",
@@ -231,7 +290,7 @@ const CLIENT_SCRIPT = [
   "",
   "    var home = zoneById[person.homeZone];",
   "    var work = zoneById[person.workZone];",
-  "    if (!home || !work) return { x: 400, y: 240 };",
+  "    if (!home || !work) return { x: 400, y: 190 };",
   "    if (home.id === work.id) return wander(home.x, home.y, person.id, realSeconds);",
   "",
   "    var jitter = (person.id * 37) % 60 / 60; // 0-1の個人差",

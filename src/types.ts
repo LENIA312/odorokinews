@@ -47,6 +47,7 @@ export interface OrganizationRow {
 export interface PersonRow {
   id: number;
   name: string;
+  name_kana: string | null;
   age: number | null;
   gender: string | null;
   city_id: number | null;

@@ -98,6 +98,30 @@ const STYLE = `
     margin: 0 0 1rem;
   }
 
+  .category-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 1.2rem;
+    font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+    font-size: 0.82rem;
+  }
+  .category-tab {
+    display: inline-block;
+    padding: 0.3rem 0.8rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--paper);
+    color: var(--ink-soft);
+  }
+  .category-tab:hover { text-decoration: none; border-color: var(--accent); }
+  .category-tab.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 700;
+  }
+
   .news-card {
     background: var(--paper);
     border: 1px solid var(--line);

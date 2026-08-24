@@ -62,7 +62,7 @@ ${recent}
   "summary": "string（1文の事実サマリー、40文字程度）",
   "detail": "string（2〜4文の詳細説明）",
   "involves_magic": true または false,
-  "related_people": [ {"id": 数値} または {"new": {"name": "string", "age": 数値, "gender": "string", "occupation": "string", "organization_id": 数値またはnull}} ],
+  "related_people": [ {"id": 数値} または {"new": {"name": "string", "name_kana": "string（nameのひらがな読み。例: 田中太郎→たなか たろう）", "age": 数値, "gender": "string", "occupation": "string", "organization_id": 数値またはnull}} ],
   "related_organizations": [ 上記一覧に存在するid の配列 ],
   "state_changes": [
     {"type": "person_status", "target_id": 数値, "value": "alive|injured|hospitalized|deceased|celebrating|under_investigation"},

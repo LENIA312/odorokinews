@@ -1,7 +1,21 @@
 import { html, raw, RawHtml } from "../utils/html";
 import { formatDateTimeJa, formatWorldDateJa } from "../utils/date";
 import { leadFromBody } from "./components";
+import { NEWS_CATEGORIES } from "../constants";
 import type { NewsRow } from "../types";
+
+export function categoryTabs(active: string | null): RawHtml {
+  const tabs = [{ label: "すべて", href: "/news" }, ...NEWS_CATEGORIES.map((c) => ({ label: c, href: `/news?category=${encodeURIComponent(c)}` }))];
+
+  const items = tabs
+    .map((t) => {
+      const isActive = (active === null && t.label === "すべて") || active === t.label;
+      return html`<a href="${t.href}" class="category-tab ${isActive ? "active" : ""}">${t.label}</a>`.value;
+    })
+    .join("");
+
+  return html`<div class="category-tabs">${raw(items)}</div>`;
+}
 
 export function newsListSection(title: string, items: NewsRow[]): RawHtml {
   if (items.length === 0) {

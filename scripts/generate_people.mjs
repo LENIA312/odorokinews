@@ -8,21 +8,30 @@
 
 const COUNT = Number(process.argv[2] ?? 100);
 
+// 各配列は [表記, ひらがな読み] のペア。50音順ソート機能のため読みを必須で持たせる。
 const SURNAMES = [
-  "佐藤", "鈴木", "高橋", "田中", "渡辺", "伊藤", "山本", "中村", "小林", "加藤",
-  "吉田", "山田", "佐々木", "山口", "松本", "井上", "木村", "林", "斎藤", "清水",
-  "森", "池田", "橋本", "山崎", "石川", "中島", "前田", "藤田", "岡田", "長谷川",
-  "村上", "近藤", "石井", "坂本", "遠藤", "青木", "福田", "三浦", "西村", "藤井",
+  ["佐藤", "さとう"], ["鈴木", "すずき"], ["高橋", "たかはし"], ["田中", "たなか"], ["渡辺", "わたなべ"],
+  ["伊藤", "いとう"], ["山本", "やまもと"], ["中村", "なかむら"], ["小林", "こばやし"], ["加藤", "かとう"],
+  ["吉田", "よしだ"], ["山田", "やまだ"], ["佐々木", "ささき"], ["山口", "やまぐち"], ["松本", "まつもと"],
+  ["井上", "いのうえ"], ["木村", "きむら"], ["林", "はやし"], ["斎藤", "さいとう"], ["清水", "しみず"],
+  ["森", "もり"], ["池田", "いけだ"], ["橋本", "はしもと"], ["山崎", "やまざき"], ["石川", "いしかわ"],
+  ["中島", "なかじま"], ["前田", "まえだ"], ["藤田", "ふじた"], ["岡田", "おかだ"], ["長谷川", "はせがわ"],
+  ["村上", "むらかみ"], ["近藤", "こんどう"], ["石井", "いしい"], ["坂本", "さかもと"], ["遠藤", "えんどう"],
+  ["青木", "あおき"], ["福田", "ふくだ"], ["三浦", "みうら"], ["西村", "にしむら"], ["藤井", "ふじい"],
 ];
 
 const GIVEN_MALE = [
-  "翔太", "大輔", "健太", "直樹", "拓也", "涼太", "悠斗", "蓮", "陸", "大和",
-  "颯太", "海斗", "龍之介", "亮", "誠", "修", "剛", "隆", "学", "淳",
+  ["翔太", "しょうた"], ["大輔", "だいすけ"], ["健太", "けんた"], ["直樹", "なおき"], ["拓也", "たくや"],
+  ["涼太", "りょうた"], ["悠斗", "ゆうと"], ["蓮", "れん"], ["陸", "りく"], ["大和", "やまと"],
+  ["颯太", "そうた"], ["海斗", "かいと"], ["龍之介", "りゅうのすけ"], ["亮", "りょう"], ["誠", "まこと"],
+  ["修", "おさむ"], ["剛", "つよし"], ["隆", "たかし"], ["学", "まなぶ"], ["淳", "じゅん"],
 ];
 
 const GIVEN_FEMALE = [
-  "美咲", "陽菜", "結衣", "愛", "さくら", "恵", "由美", "直美", "真由美", "麻衣",
-  "綾", "沙織", "智子", "裕子", "幸子", "凛", "葵", "花", "咲希", "琴音",
+  ["美咲", "みさき"], ["陽菜", "ひな"], ["結衣", "ゆい"], ["愛", "あい"], ["さくら", "さくら"],
+  ["恵", "めぐみ"], ["由美", "ゆみ"], ["直美", "なおみ"], ["真由美", "まゆみ"], ["麻衣", "まい"],
+  ["綾", "あや"], ["沙織", "さおり"], ["智子", "ともこ"], ["裕子", "ゆうこ"], ["幸子", "さちこ"],
+  ["凛", "りん"], ["葵", "あおい"], ["花", "はな"], ["咲希", "さき"], ["琴音", "ことね"],
 ];
 
 const OCCUPATIONS_GENERAL = [
@@ -63,9 +72,10 @@ const rows = [];
 
 for (let i = 0; i < COUNT; i++) {
   const isFemale = Math.random() < 0.5;
-  const surname = pick(SURNAMES);
-  const given = isFemale ? pick(GIVEN_FEMALE) : pick(GIVEN_MALE);
+  const [surname, surnameKana] = pick(SURNAMES);
+  const [given, givenKana] = isFemale ? pick(GIVEN_FEMALE) : pick(GIVEN_MALE);
   const name = `${surname} ${given}`;
+  const nameKana = `${surnameKana} ${givenKana}`;
   const age = 18 + Math.floor(Math.random() * 58); // 18-75
   const gender = isFemale ? "female" : "male";
 
@@ -78,16 +88,20 @@ for (let i = 0; i < COUNT; i++) {
   } else {
     occupation = Math.random() < 0.08 ? pick(OCCUPATIONS_MAGIC) : pick(OCCUPATIONS_GENERAL);
   }
+  // 「主婦/主夫」は性別と表記を一致させる。
+  if (occupation === "主婦" || occupation === "主夫") {
+    occupation = isFemale ? "主婦" : "主夫";
+  }
 
   const money = Math.floor(20000 + Math.random() * 800000);
 
   rows.push(
-    `(${esc(name)}, ${age}, ${esc(gender)}, 1, ${esc(occupation)}, ${esc(organizationId)}, ${money}, 'alive', 'simulation', NULL, ${esc(NOW)}, ${esc(NOW)})`
+    `(${esc(name)}, ${esc(nameKana)}, ${age}, ${esc(gender)}, 1, ${esc(occupation)}, ${esc(organizationId)}, ${money}, 'alive', 'simulation', NULL, ${esc(NOW)}, ${esc(NOW)})`
   );
 }
 
 const sql =
-  "INSERT INTO people (name, age, gender, city_id, occupation, organization_id, money, status, origin, bio, created_at, updated_at) VALUES\n" +
+  "INSERT INTO people (name, name_kana, age, gender, city_id, occupation, organization_id, money, status, origin, bio, created_at, updated_at) VALUES\n" +
   rows.join(",\n") +
   ";\n";
 

@@ -38,6 +38,17 @@ export function listPeople(env: Env, limit = 60): Promise<D1Result<PersonRow>> {
     .all<PersonRow>();
 }
 
+// 人物一覧ページ用。50音順（name_kanaが無い場合は末尾に回す）で全件取得する。
+export function listPeopleByKana(env: Env, limit = 1000): Promise<D1Result<PersonRow>> {
+  return env.DB.prepare(
+    `SELECT * FROM people
+     ORDER BY (name_kana IS NULL) ASC, name_kana ASC, name ASC
+     LIMIT ?`
+  )
+    .bind(limit)
+    .all<PersonRow>();
+}
+
 export function getPerson(env: Env, id: number): Promise<PersonRow | null> {
   return env.DB.prepare("SELECT * FROM people WHERE id = ?").bind(id).first<PersonRow>();
 }
@@ -61,6 +72,12 @@ export async function listNewsForPerson(env: Env, personId: number, limit = 20):
 export function listNews(env: Env, limit = 20, offset = 0): Promise<D1Result<NewsRow>> {
   return env.DB.prepare("SELECT * FROM news ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?")
     .bind(limit, offset)
+    .all<NewsRow>();
+}
+
+export function listNewsByCategory(env: Env, category: string, limit = 50): Promise<D1Result<NewsRow>> {
+  return env.DB.prepare("SELECT * FROM news WHERE category = ? ORDER BY published_at DESC, id DESC LIMIT ?")
+    .bind(category, limit)
     .all<NewsRow>();
 }
 

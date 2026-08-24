@@ -128,10 +128,10 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
     const createdPeopleNames: string[] = [];
     for (const np of eventDraft.new_people) {
       const insertResult = await env.DB.prepare(
-        `INSERT INTO people (name, age, gender, city_id, occupation, organization_id, money, status, origin, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 0, 'alive', 'news_generated', ?, ?)`
+        `INSERT INTO people (name, name_kana, age, gender, city_id, occupation, organization_id, money, status, origin, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'alive', 'news_generated', ?, ?)`
       )
-        .bind(np.name, np.age, np.gender, cityId, np.occupation, np.organization_id, now(), now())
+        .bind(np.name, np.name_kana, np.age, np.gender, cityId, np.occupation, np.organization_id, now(), now())
         .run();
       const newId = insertResult.meta.last_row_id as number;
       createdPeopleIds.push(newId);

@@ -2,13 +2,19 @@
 // 「存在しない人物/企業の参照」「固定設定の変更」などを検出し、
 // 不正な部分だけを取り除いて安全な構造化データにする（docs.md 21章）。
 
+import { NEWS_CATEGORIES } from "../constants";
+
 export interface NewPersonDraft {
   name: string;
+  name_kana: string | null;
   age: number | null;
   gender: string | null;
   occupation: string | null;
   organization_id: number | null;
 }
+
+// ひらがな（＋長音記号・中黒・空白）のみで構成されているかを緩く判定する。
+const HIRAGANA_ONLY = /^[ぁ-ゖゝ-ゟー・\s]+$/;
 
 export type StateChange =
   | { type: "person_status"; target_id: number; value: string }
@@ -72,10 +78,13 @@ export function validateEventDraft(
         const n = e.new as Record<string, unknown>;
         const name = cleanText(n.name, 40);
         if (!name) continue;
+        const nameKanaRaw = cleanText(n.name_kana, 60);
+        const nameKana = nameKanaRaw && HIRAGANA_ONLY.test(nameKanaRaw) ? nameKanaRaw : null;
         const age = isFiniteNumber(n.age) && n.age >= 0 && n.age <= 300 ? Math.round(n.age) : null;
         const orgId = isFiniteNumber(n.organization_id) && allowedOrgIds.has(n.organization_id) ? n.organization_id : null;
         newPeople.push({
           name,
+          name_kana: nameKana,
           age,
           gender: cleanText(n.gender, 20) || null,
           occupation: cleanText(n.occupation, 40) || null,
@@ -137,7 +146,7 @@ export interface ValidatedNewsDraft {
   category: string;
 }
 
-const ALLOWED_CATEGORIES = new Set(["社会", "経済", "政治", "事故", "文化", "科学", "魔法", "スポーツ"]);
+const ALLOWED_CATEGORIES = new Set<string>(NEWS_CATEGORIES);
 
 export function validateNewsDraft(raw: unknown): ValidatedNewsDraft | null {
   if (typeof raw !== "object" || raw === null) return null;

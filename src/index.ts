@@ -13,17 +13,21 @@ import {
   latestPriceIndex,
   listCities,
   listNews,
+  listNewsByCategory,
   listNewsForPerson,
   listOrganizations,
   listPeople,
+  listPeopleByKana,
   listRecentSimulationRuns,
   listRelationshipsForPerson,
   listTimeline,
   parseIdArray,
 } from "./db/queries";
+import { html } from "./utils/html";
+import { NEWS_CATEGORIES } from "./constants";
 import { page } from "./views/layout";
 import { worldbar } from "./views/components";
-import { newsListSection } from "./views/newsList";
+import { newsListSection, categoryTabs } from "./views/newsList";
 import { newsDetailView } from "./views/newsDetail";
 import { worldView } from "./views/world";
 import { peopleListView } from "./views/people";
@@ -59,13 +63,17 @@ app.get("/", async (c) => {
 
 app.get("/news", async (c) => {
   const world = await getWorld(c.env);
-  const news = await listNews(c.env, 50);
+  const categoryParam = c.req.query("category");
+  const category = categoryParam && (NEWS_CATEGORIES as readonly string[]).includes(categoryParam) ? categoryParam : null;
+
+  const news = category ? await listNewsByCategory(c.env, category, 50) : await listNews(c.env, 50);
+
   return c.html(
     page({
-      title: "ニュース一覧",
+      title: category ? `ニュース - ${category}` : "ニュース一覧",
       activePath: "/",
       worldbar: world ? worldbar(world) : undefined,
-      body: newsListSection("ニュース一覧", news.results ?? []),
+      body: html`${categoryTabs(category)}${newsListSection(category ?? "すべてのニュース", news.results ?? [])}`,
     }).value
   );
 });
@@ -118,7 +126,7 @@ app.get("/world", async (c) => {
 
 app.get("/people", async (c) => {
   const world = await getWorld(c.env);
-  const [people, orgs] = await Promise.all([listPeople(c.env, 200), listOrganizations(c.env)]);
+  const [people, orgs] = await Promise.all([listPeopleByKana(c.env), listOrganizations(c.env)]);
   const orgById = new Map<number, OrganizationRow>((orgs.results ?? []).map((o) => [o.id, o]));
 
   return c.html(
