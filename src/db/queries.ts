@@ -7,6 +7,7 @@ import type {
   OrganizationRow,
   PersonRow,
   RelationshipRow,
+  SimulationRunRow,
   TimelineRow,
   WorldRow,
 } from "../types";
@@ -75,6 +76,12 @@ export function listTimeline(env: Env, limit = 100): Promise<D1Result<TimelineRo
   return env.DB.prepare("SELECT * FROM timeline ORDER BY world_date DESC, id DESC LIMIT ?")
     .bind(limit)
     .all<TimelineRow>();
+}
+
+export function listRecentSimulationRuns(env: Env, limit = 14): Promise<D1Result<SimulationRunRow>> {
+  return env.DB.prepare("SELECT * FROM simulation_runs ORDER BY id DESC LIMIT ?")
+    .bind(limit)
+    .all<SimulationRunRow>();
 }
 
 export function latestEconomicDataByOrg(env: Env): Promise<D1Result<EconomicDataRow>> {

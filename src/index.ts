@@ -16,6 +16,7 @@ import {
   listNewsForPerson,
   listOrganizations,
   listPeople,
+  listRecentSimulationRuns,
   listRelationshipsForPerson,
   listTimeline,
   parseIdArray,
@@ -30,8 +31,12 @@ import { personDetailView } from "./views/personDetail";
 import { timelineView } from "./views/timeline";
 import { economyView } from "./views/economy";
 import { notFoundView } from "./views/notFound";
+import { adminDashboardPage } from "./views/admin";
 import { runDailySimulation } from "./simulation/runDailySimulation";
 import type { EconomicDataRow, OrganizationRow, PersonRow, RelationshipRow } from "./types";
+
+// wrangler.jsonc の triggers.crons と手動で同期させる表示用文字列。
+const CRON_SCHEDULE_DISPLAY = ["10:00 JST", "22:00 JST"];
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -198,22 +203,50 @@ app.get("/api/health", async (c) => {
   return c.json({ status: "ok", worldDate: world?.current_date ?? null });
 });
 
-// 手動でのシミュレーション実行（デプロイ後の動作確認用）。
+// 管理画面（/admin）。トークン入力・表示自体は誰でも開けるが、
+// 中のデータ取得・操作はすべて下記のADMIN_TOKEN認証を通る。
+app.get("/admin", (c) => c.html(adminDashboardPage()));
+
+function checkAdminAuth(c: { env: Env; req: { header: (name: string) => string | undefined } }): Response | null {
+  if (!c.env.ADMIN_TOKEN) {
+    return Response.json({ error: "ADMIN_TOKEN is not configured" }, { status: 404 });
+  }
+  if (c.req.header("x-admin-token") !== c.env.ADMIN_TOKEN) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+  return null;
+}
+
+// 手動でのシミュレーション実行（強制的なニュース発行）。
 // ADMIN_TOKEN が設定されている場合のみ有効。
 app.post("/api/admin/simulate", async (c) => {
-  if (!c.env.ADMIN_TOKEN) {
-    return c.json({ error: "ADMIN_TOKEN is not configured" }, 404);
-  }
-  const provided = c.req.header("x-admin-token");
-  if (provided !== c.env.ADMIN_TOKEN) {
-    return c.json({ error: "unauthorized" }, 401);
-  }
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
   try {
     const result = await runDailySimulation(c.env);
     return c.json(result);
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
+});
+
+// 管理画面が定期ポーリングする状態確認API。
+app.get("/api/admin/status", async (c) => {
+  const authError = checkAdminAuth(c);
+  if (authError) return authError;
+
+  const [world, runs, news] = await Promise.all([
+    getWorld(c.env),
+    listRecentSimulationRuns(c.env, 14),
+    listNews(c.env, 5),
+  ]);
+
+  return c.json({
+    world: world ? { name: world.name, current_date: world.current_date, updated_at: world.updated_at } : null,
+    recentRuns: runs.results ?? [],
+    recentNews: news.results ?? [],
+    schedule: CRON_SCHEDULE_DISPLAY,
+  });
 });
 
 app.notFound((c) => c.html(page({ title: "見つかりません", activePath: "/", body: notFoundView() }).value, 404));
