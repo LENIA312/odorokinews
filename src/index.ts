@@ -32,6 +32,8 @@ import { timelineView } from "./views/timeline";
 import { economyView } from "./views/economy";
 import { notFoundView } from "./views/notFound";
 import { adminDashboardPage } from "./views/admin";
+import { mapView } from "./views/map";
+import { assignPersonZones } from "./views/mapZones";
 import { runDailySimulation } from "./simulation/runDailySimulation";
 import type { EconomicDataRow, OrganizationRow, PersonRow, RelationshipRow } from "./types";
 
@@ -196,6 +198,23 @@ app.get("/economy", async (c) => {
       body: economyView(orgs.results ?? [], latestByOrg, priceIndex),
     }).value
   );
+});
+
+app.get("/map", async (c) => {
+  const world = await getWorld(c.env);
+  return c.html(
+    page({
+      title: "街の様子",
+      activePath: "/map",
+      worldbar: world ? worldbar(world) : undefined,
+      body: mapView(),
+    }).value
+  );
+});
+
+app.get("/api/map/people", async (c) => {
+  const people = await listPeople(c.env, 300);
+  return c.json({ people: assignPersonZones(people.results ?? []) });
 });
 
 app.get("/api/health", async (c) => {

@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { href: "/people", label: "人物" },
   { href: "/timeline", label: "年表" },
   { href: "/economy", label: "経済" },
+  { href: "/map", label: "街の様子" },
 ];
 
 const STYLE = `
