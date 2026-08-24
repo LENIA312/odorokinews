@@ -21,7 +21,7 @@
     {
       "binding": "DB",
       "database_name": "odorokinews-db",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "33385610-d9d0-4dd6-86d2-fd6405fb5d04",
       "migrations_dir": "./migrations"
     }
   ],
@@ -35,8 +35,8 @@
   // 将来モデルが変わった場合はここだけを書き換えれば良い。
   "vars": {
     "ENVIRONMENT": "production",
-    "AI_EVENT_MODEL": "@cf/meta/llama-3.1-8b-instruct",
-    "AI_NEWS_MODEL": "@cf/meta/llama-3.1-8b-instruct",
+    "AI_EVENT_MODEL": "@cf/meta/llama-3.1-8b-instruct-fp8",
+    "AI_NEWS_MODEL": "@cf/meta/llama-3.1-8b-instruct-fp8",
     "AI_MAX_CALLS_PER_RUN": "4"
   }
 
