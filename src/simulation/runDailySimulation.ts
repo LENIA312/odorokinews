@@ -18,7 +18,7 @@ import { assignZonePositionForCity } from "../views/mapZones";
 import { callAiForJson } from "./ai";
 import { buildEventPrompt, buildNewsPrompt } from "./prompts";
 import { validateEventDraft, validateNewsDraft, type ValidatedEventDraft, type ValidatedNewsDraft } from "./validate";
-import { generateFallbackEventAndNews } from "./fallback";
+import { generateFallbackEventAndNews, padShortArticleBody } from "./fallback";
 import { applyStateChanges } from "./stateChanges";
 
 export interface SimulationResult {
@@ -195,7 +195,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       ...facilities.map((f) => ({ x: f.map_x, y: f.map_y })),
     ];
     for (const no of eventDraft.new_organizations) {
-      const pos = assignZonePositionForCity(city, zonePoints, zonePoints);
+      const pos = assignZonePositionForCity(city, zonePoints);
       const newOrgId = await createOrganization(env, {
         name: no.name,
         kind: no.kind,
@@ -212,7 +212,7 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       createdOrgNames.push(no.name);
     }
     for (const nf of eventDraft.new_facilities) {
-      const pos = assignZonePositionForCity(city, zonePoints, zonePoints);
+      const pos = assignZonePositionForCity(city, zonePoints);
       await createFacility(env, {
         name: nf.name,
         kind: nf.kind,
@@ -313,6 +313,10 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       };
     }
 
+    // AI・フォールバックどちらの経路でも、本文が最低文字数に満たない場合は機械的に底上げする
+    // （プロンプトで指示していても、小型モデルが短い記事を書いてしまうことがあるため）。
+    newsDraft = { ...newsDraft, body: padShortArticleBody(newsDraft.body, newsDraft.category) };
+
     // 記事末尾の「記者: (名前)」表記用に、その都市の記者(occupation='記者')からランダムに1人選ぶ。
     // 該当者がいない場合はnullのまま(表記なしで問題ない)。
     const reporterId = await getRandomReporterId(env, cityId);
@@ -346,8 +350,13 @@ export async function runDailySimulation(env: Env): Promise<SimulationResult> {
       .bind(targetDate, eventId, newsDraft.title, now())
       .run();
 
-    await env.DB.prepare("UPDATE world SET current_date = ?, last_published_at = ?, updated_at = ? WHERE id = 1")
-      .bind(targetDate, now(), now())
+    // 天候もイベントAI(またはフォールバック時は現状維持)に管理を任せる。晴れ→曇り→雨のような
+    // 段階を踏んだ推移をプロンプト側で指示しているため、ここでは提案された値をそのまま反映する。
+    const nextWeather = eventDraft.weather ?? world.weather;
+    await env.DB.prepare(
+      "UPDATE world SET current_date = ?, last_published_at = ?, weather = ?, updated_at = ? WHERE id = 1"
+    )
+      .bind(targetDate, now(), nextWeather, now())
       .run();
 
     await env.DB.prepare(

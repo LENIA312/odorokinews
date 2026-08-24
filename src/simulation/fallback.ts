@@ -10,6 +10,37 @@ export interface FallbackResult {
   news: ValidatedNewsDraft;
 }
 
+// 記事本文の最低文字数。プロンプト側でも指示しているが、小型モデルが指示を守り切れず
+// 短く終わらせてしまうことがあるため、機械的な安全策としてここで最終的に底上げする。
+export const MIN_BODY_LENGTH = 150;
+
+// 事故等の深刻な話題にまで無条件でジョークを足すと不謹慎になりうるため、
+// それ以外のカテゴリでのみユーモラスな結びの一文を使う。
+const HUMOROUS_CLOSERS = [
+  "なお、この件について特に大きな混乱は無く、むしろ「今日はこれくらいで済んでよかった」という\n声すら聞かれた。モーゼン・クロニクルは、今後もこの手の“平和すぎるニュース”にすら\n真剣に向き合っていく所存である。",
+  "続報については本紙記者が今後も追いかける方針だが、正直なところ今日はこの話題だけで\n紙面が持つかどうかを一番気にしているのは記者自身である。",
+  "現地で本紙記者が話を聞いたところ、通りすがりの住民の一人は「へえ」とだけ答えて\n去っていった。取材班としては、もう少しコメントが欲しかったところである。",
+  "関係者への追加取材は現在も続いているが、今のところ判明しているのは以上である。\n続報が入り次第、本紙は誰よりも早く（そして誰よりも大げさに）お伝えする。",
+];
+
+const NEUTRAL_CLOSER = "本紙は今後も現地の状況を注視し、続報が入り次第お伝えする。";
+
+/**
+ * 記事本文が短すぎる場合、末尾に一文を足して自然に底上げする。
+ * 事故カテゴリなど深刻な話題ではユーモラスな結びを避け、中立的な一文のみを使う。
+ */
+export function padShortArticleBody(body: string, category: string, minLength = MIN_BODY_LENGTH): string {
+  if (body.length >= minLength) return body;
+  const useHumor = category !== "事故";
+  let padded = useHumor
+    ? `${body}\n\n${HUMOROUS_CLOSERS[Math.floor(Math.random() * HUMOROUS_CLOSERS.length)]}`
+    : `${body}\n\n${NEUTRAL_CLOSER}`;
+  if (padded.length < minLength) {
+    padded = `${padded}\n\n${NEUTRAL_CLOSER}`;
+  }
+  return padded;
+}
+
 function pickRandom<T>(arr: T[]): T | null {
   if (arr.length === 0) return null;
   return arr[Math.floor(Math.random() * arr.length)];
@@ -39,6 +70,7 @@ const productLaunch: Template = ({ cityName, orgs, people }) => {
       related_organization_ids: [org.id],
       new_organizations: [],
       new_facilities: [],
+      weather: null,
       state_changes: [],
     },
     news: {
@@ -63,6 +95,7 @@ const minorIncident: Template = ({ cityName, orgs }) => {
       related_organization_ids: [org.id],
       new_organizations: [],
       new_facilities: [],
+      weather: null,
       state_changes: [],
     },
     news: {
@@ -87,6 +120,7 @@ const personAward: Template = ({ cityName, people }) => {
       related_organization_ids: [],
       new_organizations: [],
       new_facilities: [],
+      weather: null,
       state_changes: [],
     },
     news: {
@@ -109,6 +143,7 @@ const magicPhenomenon: Template = ({ cityName }) => {
       related_organization_ids: [],
       new_organizations: [],
       new_facilities: [],
+      weather: null,
       state_changes: [],
     },
     news: {
@@ -137,6 +172,7 @@ const partnership: Template = ({ orgs }) => {
       related_organization_ids: [a.id, b.id],
       new_organizations: [],
       new_facilities: [],
+      weather: null,
       state_changes: [],
     },
     news: {
@@ -171,6 +207,7 @@ export function generateFallbackEventAndNews(
       related_organization_ids: [],
       new_organizations: [],
       new_facilities: [],
+      weather: null,
       state_changes: [],
     },
     news: {

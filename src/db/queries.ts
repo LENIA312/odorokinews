@@ -87,6 +87,12 @@ export interface FacilityUpdateFields {
   map_y: number;
 }
 
+// 施設のhomeZone/workZoneは(人物テーブルに保存されず)毎リクエストassignPersonZonesで
+// 動的に再計算されるため、削除しても参照切れは起きない（残った施設群へ自然に再分配される）。
+export function deleteFacility(env: Env, id: number): Promise<D1Result> {
+  return env.DB.prepare("DELETE FROM facilities WHERE id = ?").bind(id).run();
+}
+
 export function updateFacility(env: Env, id: number, fields: FacilityUpdateFields): Promise<D1Result> {
   return env.DB.prepare(
     `UPDATE facilities SET name = ?, kind = ?, description = ?, city_id = ?, map_x = ?, map_y = ?, updated_at = ?
@@ -341,6 +347,28 @@ export function updateCityAdmin(env: Env, id: number, fields: CityUpdateFields):
   )
     .bind(fields.name, fields.population, fields.description, fields.industries, fields.status, new Date().toISOString(), id)
     .run();
+}
+
+// 都市の削除は、組織・施設・人物が1件も紐づいていない場合のみ安全（それらはcity_idを
+// 参照しており、都市を消すと参照切れになるため）。呼び出し側でこの件数を見て許可/拒否を判断する。
+export async function countCityContents(
+  env: Env,
+  cityId: number
+): Promise<{ organizations: number; facilities: number; people: number }> {
+  const [orgs, facilities, people] = await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) AS n FROM organizations WHERE city_id = ?").bind(cityId).first<{ n: number }>(),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM facilities WHERE city_id = ?").bind(cityId).first<{ n: number }>(),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM people WHERE city_id = ?").bind(cityId).first<{ n: number }>(),
+  ]);
+  return {
+    organizations: orgs?.n ?? 0,
+    facilities: facilities?.n ?? 0,
+    people: people?.n ?? 0,
+  };
+}
+
+export function deleteCity(env: Env, id: number): Promise<D1Result> {
+  return env.DB.prepare("DELETE FROM cities WHERE id = ?").bind(id).run();
 }
 
 export interface NewsUpdateFields {

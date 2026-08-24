@@ -6,6 +6,8 @@
 // - organizations: 企業・行政・学校など、雇用主として人物が勤務するゾーン
 // どちらも city_id を持ち、新しい都市が追加・Active化されるたびに、その都市専用の
 // ゾーン群として地図が自動的に広がっていく（単一のランドマークでは表現しない）。
+// draft状態の都市に属するゾーンは、buildOrgZones/buildFacilityZonesの時点で一切マップに
+// 含めない（Activeに戻すまで地図上には存在しない扱い）。
 
 import type { FacilityRow, OrganizationRow, PersonRow } from "../types";
 
@@ -15,7 +17,7 @@ export interface Zone {
   x: number;
   y: number;
   kind: "org" | "residential" | "university" | "park" | "shopping_street" | "other";
-  status?: string; // orgゾーンのみDB由来。draftの都市に属するゾーンには呼び出し側で別途付与する。
+  status?: string; // 組織自体の状態(倒産・調査中等)のみ。DB由来。
 }
 
 export function orgZoneId(orgId: number): string {
@@ -33,6 +35,9 @@ function distance(a: { x: number; y: number }, b: { x: number; y: number }): num
 /**
  * 既存ゾーン群の外側に、新しいゾーン(組織・施設)の座標を自動的に割り当てる。
  * 「マップのエリア拡大も積極的に行う」ため、既存の範囲の外へ広げていく。
+ * 探索の開始角度を毎回ランダムにする（固定で0度＝真右から探索すると、baseRadius分
+ * 離れた最初の候補がほぼ毎回そのまま採用されてしまい、「常に右方向にしか伸びない」
+ * 単調な配置になっていた実際の不具合があったため）。
  */
 export function assignNewOrgPosition(existingZones: { x: number; y: number }[]): { x: number; y: number } {
   if (existingZones.length === 0) return { x: 650, y: 430 };
@@ -46,9 +51,10 @@ export function assignNewOrgPosition(existingZones: { x: number; y: number }[]):
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   const baseRadius = Math.max(maxX - minX, maxY - minY) / 2 + 220;
+  const startAngle = Math.random() * 360;
 
   for (let attempt = 0; attempt < 32; attempt++) {
-    const angle = ((attempt * 53) % 360) * (Math.PI / 180);
+    const angle = ((startAngle + attempt * 53) % 360) * (Math.PI / 180);
     const radius = baseRadius + Math.floor(attempt / 8) * 200;
     const x = Math.round(cx + Math.cos(angle) * radius);
     const y = Math.round(cy + Math.sin(angle) * radius * 0.6);
@@ -77,9 +83,10 @@ export function assignNewCityPosition(existingPoints: { x: number; y: number }[]
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   const baseRadius = Math.max(maxX - minX, maxY - minY) / 2 + 500;
+  const startAngle = Math.random() * 360;
 
   for (let attempt = 0; attempt < 32; attempt++) {
-    const angle = ((attempt * 71) % 360) * (Math.PI / 180);
+    const angle = ((startAngle + attempt * 71) % 360) * (Math.PI / 180);
     const radius = baseRadius + Math.floor(attempt / 8) * 400;
     const x = Math.round(cx + Math.cos(angle) * radius);
     const y = Math.round(cy + Math.sin(angle) * radius * 0.6);
@@ -91,18 +98,16 @@ export function assignNewCityPosition(existingPoints: { x: number; y: number }[]
 
 /**
  * 組織・施設を新規作成する際の配置座標を決める共通ロジック。
- * ダイナン市(id=1)は既存の全ゾーンを基準に外側へ、それ以外の都市はその都市の
- * 拠点座標(cities.map_x/map_y)+同都市の既存ゾーンを基準に配置する。
- * こうすることで、都市ごとにまとまったゾーン群が視覚的に分かれて広がっていく。
+ * すべての都市（ダイナン市id=1も含む）で同じルールを使う: その都市の拠点座標
+ * (cities.map_x/map_y)+同都市の既存ゾーンだけを基準に配置する。
+ * 以前はダイナン市だけ「全都市を横断した全ゾーン」を基準にしていたため、他の都市が
+ * 遠くに追加されるたびにダイナン市側のバウンディングボックスまで無関係に広がってしまう
+ * 不具合があった（都市ごとにまとまった配置にならず、地図全体が単調に伸びる原因の一つ）。
  */
 export function assignZonePositionForCity(
   city: { id: number; map_x: number | null; map_y: number | null },
-  allZonePoints: { x: number; y: number }[],
   sameCityZonePoints: { x: number; y: number }[]
 ): { x: number; y: number } {
-  if (city.id === 1) {
-    return assignNewOrgPosition(allZonePoints);
-  }
   const cityAnchor = { x: city.map_x ?? 650, y: city.map_y ?? 430 };
   return assignNewOrgPosition([cityAnchor, ...sameCityZonePoints]);
 }
@@ -121,33 +126,37 @@ export function nearestZoneId(point: { x: number; y: number }, zones: Zone[]): s
   return best ? best.id : null;
 }
 
-/** organizations テーブルの内容から、組織ゾーンの一覧を構築する。 */
+/**
+ * organizations テーブルの内容から、組織ゾーンの一覧を構築する。
+ * draft状態の都市に属する組織はマップに一切表示しない（都市をActiveへ戻すまで地図上に
+ * 存在しない扱いにする。「準備中の都市」というラベル付きで表示していた従来方式は廃止）。
+ */
 export function buildOrgZones(organizations: OrganizationRow[], draftCityIds: Set<number> = new Set()): Zone[] {
   return organizations
-    .filter((o) => o.map_x != null && o.map_y != null)
+    .filter((o) => o.map_x != null && o.map_y != null && (o.city_id == null || !draftCityIds.has(o.city_id)))
     .map((o) => ({
       id: orgZoneId(o.id),
       label: o.name,
       x: o.map_x as number,
       y: o.map_y as number,
       kind: "org" as const,
-      // 組織自体の状態(倒産・調査中等)を優先し、draftの都市に属する場合のみdraft表示にする。
-      status: o.status !== "active" ? o.status : o.city_id != null && draftCityIds.has(o.city_id) ? "draft" : o.status,
+      status: o.status !== "active" ? o.status : undefined,
     }));
 }
 
 const KNOWN_FACILITY_KINDS = new Set(["residential", "university", "park", "shopping_street"]);
 
-/** facilities テーブルの内容から、施設ゾーンの一覧を構築する。 */
+/** facilities テーブルの内容から、施設ゾーンの一覧を構築する。draft都市に属する施設は除外する。 */
 export function buildFacilityZones(facilities: FacilityRow[], draftCityIds: Set<number> = new Set()): Zone[] {
-  return facilities.map((f) => ({
-    id: facilityZoneId(f.id),
-    label: f.name,
-    x: f.map_x,
-    y: f.map_y,
-    kind: (KNOWN_FACILITY_KINDS.has(f.kind) ? f.kind : "other") as Zone["kind"],
-    status: draftCityIds.has(f.city_id) ? "draft" : undefined,
-  }));
+  return facilities
+    .filter((f) => !draftCityIds.has(f.city_id))
+    .map((f) => ({
+      id: facilityZoneId(f.id),
+      label: f.name,
+      x: f.map_x,
+      y: f.map_y,
+      kind: (KNOWN_FACILITY_KINDS.has(f.kind) ? f.kind : "other") as Zone["kind"],
+    }));
 }
 
 /** 施設ゾーン+組織ゾーンを合わせた全ゾーン一覧を返す（施設を先に並べ、道路接続の起点にする）。 */

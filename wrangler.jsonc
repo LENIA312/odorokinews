@@ -29,9 +29,10 @@
     }
   ],
 
-  // Workers AI（常にリモート実行）
+  // Workers AI（常にリモート実行。ローカル開発でも確実にリモートへ繋ぐため remote:true を明示）
   "ai": {
-    "binding": "AI"
+    "binding": "AI",
+    "remote": true
   },
 
   // 静的ファイル配信（現状はSNSカード用のog-image.pngのみ）。

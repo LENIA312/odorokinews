@@ -214,7 +214,6 @@ function roadNetwork(zoneById: Record<string, Zone>, edges: [string, string][]):
 function zoneMarkers(zones: Zone[]): string {
   var markers = zones
     .map(function (z) {
-      var isDraft = z.status === "draft";
       return (
         '<g id="zone-' + z.id + '" transform="translate(' + z.x + "," + z.y + ') scale(1.25)">' +
         '<circle class="status-ring" r="22" fill="none" stroke-width="2.6" opacity="0"></circle>' +
@@ -223,9 +222,6 @@ function zoneMarkers(zones: Zone[]): string {
         '<text x="0" y="28" text-anchor="middle" font-size="10" fill="#4a473c" font-family="Hiragino Sans, Noto Sans JP, sans-serif">' +
         escapeXml(z.label) +
         "</text>" +
-        (isDraft
-          ? '<text x="0" y="-26" text-anchor="middle" font-size="8" fill="#8a7f5f">準備中の都市</text>'
-          : "") +
         "</g>"
       );
     })
@@ -397,7 +393,6 @@ const CLIENT_SCRIPT = [
   "    celebrating: '#d4a017',",
   "    recovering: '#5b7fd9',",
   "    bankrupt: '#6b6650',",
-  "    draft: '#9b8f6b',",
   "  };",
   "",
   "  function lerp(a, b, t) { return a + (b - a) * t; }",

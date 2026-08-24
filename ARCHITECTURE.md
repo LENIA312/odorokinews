@@ -157,7 +157,8 @@ wrangler.jsonc                 Workers設定（D1/AIバインディング、静�
 | auto_publish_times | TEXT | 0003 | JSON配列 `["10:00","22:00"]` 等（JST）。管理画面から変更可能 |
 | last_auto_publish_slot | TEXT | 0003 | 直近に自動実行した枠 `"YYYY-MM-DD HH:MM"`（二重実行防止） |
 | last_published_at | TEXT | 0004 | 直近の配信ISO時刻（ヘッダー時計の秒針計算に使用） |
-| weather | TEXT | 0006 | 現在の天候（`WEATHER_CONDITIONS`のいずれか）。管理画面から変更可 |
+| weather | TEXT | 0006 | 現在の天候（`WEATHER_CONDITIONS`のいずれか）。管理画面から手動更新できる他、
+  日次シミュレーションのたびにイベントAI(または現状維持)が管理する（6.2節） |
 | created_at / updated_at | TEXT | 0001 | |
 
 #### `cities`
@@ -509,6 +510,11 @@ AIが使えない/失敗した場合に必ず動く、テンプレートベー�
   受理される（ユーザープロンプトで明示的に渡すID。7章参照）。他都市のIDを指定した提案は
   バリデーション側で黙って捨てる（AIが無関係な都市に組織・施設を作ってしまう事故を防ぐ
   機械的なガード、プロンプト指示だけに頼らない）。
+- **天候** (`weather`) を`WEATHER_CONDITIONS`のいずれかで1つ提案させる。基本は現在の天候を
+  維持し、季節感・出来事の内容に照らして自然な場合のみ段階を踏んで変える（晴れ→曇り→雨のように。
+  急変は避ける）よう指示。`runDailySimulation.ts`が最後にこの値を`world.weather`へそのまま
+  反映する（管理画面からの手動更新`PUT /api/admin/weather`と共存。以前は天候が管理画面からの
+  手動更新のみで、日々の記事内容と無関係に固定されていた）。
 - 固定設定（都市名・人口・国名）の変更禁止、過度に暴力的な内容禁止
 - **直近イベントとの重複禁止**を明示（さらにコード側でも直前1件との組織重複を機械的にブロックする
   二重の安全策、詳細は5.1節）
@@ -525,7 +531,7 @@ AIが使えない/失敗した場合に必ず動く、テンプレートベー�
 - 直近イベント一覧（新しい順、内容を含む）+ 直前イベントの主役組織名を明示して「別テーマにすること」と指示
 - 出力JSONスキーマ（`event_type`, `summary`, `detail`, `involves_magic`, `related_people`
   （newの場合`job_title`/`annual_income`を含む）, `related_organizations`, `new_organizations`,
-  `new_facilities`, `state_changes`）
+  `new_facilities`, `weather`, `state_changes`）
 
 管理画面からの「必ず登場させる人物/組織」指定は、**AIが出力に含め忘れてもコード側で機械的に
 `related_people`/`related_organizations` へ補完する**（5.3節・9章参照。プロンプト指示だけに頼らない）。
@@ -536,8 +542,16 @@ AIが使えない/失敗した場合に必ず動く、テンプレートベー�
 「事実にない新しい固有名詞・数値・因果関係を勝手に作らない」ことを厳守させつつ、
 **読んでくすっと笑ってしまうようなウィットに富んだ記事**を書くよう指示している
 （誇張した言い回し・比喩・関係者コメント風の一言は、新しい「事実」を捏造しない範囲でOK。
+ユーモアは「控えめにするより足りないくらいなら盛り込むつもりで」と明示的に強めに指示している。
 ただし負傷・死亡など深刻な内容では被害者を茶化す不謹慎な表現は避けるよう明示）。
-本文は5〜7段落程度（従来の3〜5段落からやや長めに変更）。出力は `title`/`body`/`category` のJSON。
+本文は5〜7段落程度、**最低150文字**（プロンプトに明記）。出力は `title`/`body`/`category` のJSON。
+
+小型モデル（8B）は文字数指示を守り切れず短い記事を書いてしまうことがあるため、プロンプトだけに
+頼らず`padShortArticleBody()`（`fallback.ts`）で機械的な安全策を設けている。AI生成・フォールバック
+テンプレートいずれの経路でも、`runDailySimulation.ts`が最終的なbodyを確定する直前に文字数を
+チェックし、150文字未満ならユーモラスな結び一文を追記して底上げする（事故カテゴリなど深刻な
+話題では不謹慎にならないよう、中立的な一文のみを使う）。管理画面のAI補助作成
+(`POST /api/admin/news/generate`)でも同じ関数で底上げする。
 
 管理画面のAI補助作成でジャンル指定がある場合、記者AIの出力カテゴリより**管理者の指定を優先**して
 上書きする（`newsDraft.category = genre`、AIの自律性より明示的な指定を信頼する設計）。
@@ -601,17 +615,23 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 新しい組織・施設が追加されるたびに、地図は**既存の範囲の外側へ自動的に拡張**される:
 
 - `assignNewOrgPosition(existingPoints)`: 既存ゾーン群のバウンディングボックス外側へ、他ゾーンと
-  170px以上離れた位置を探索して配置。
+  170px以上離れた位置を探索して配置。探索は32方向まで試すが、**開始角度は毎回ランダム**にする
+  （`Math.random() * 360`）。以前は常に0度＝真右から探索していたため、baseRadius分離れた
+  最初の候補がほぼ毎回そのまま採用されてしまい「新しいゾーンが常に右方向へしか伸びない」という
+  実際の不具合があった（マップが単調に見える主因の一つ）。
 - `assignNewCityPosition(existingPoints)`: 新都市作成時、その都市の**内部的な拠点座標**
   （`cities.map_x/map_y`）を決めるためだけに使う。最低500pxの余白・400px以上の間隔を取る
-  （`assignNewOrgPosition`と同じ探索アルゴリズムをスケールアップしたもの）。**この座標自体は
-  地図上に何かを描画するためのものではない**（従来の単一ランドマーク方式の名残りだが、
-  新規ゾーンの配置基準点としてのみ使う内部値として残した）。
-- `assignZonePositionForCity(city, allZonePoints, sameCityZonePoints)`: 組織・施設の座標を
-  決める共通ロジック。ダイナン市(id=1)は`assignNewOrgPosition(allZonePoints)`で**全既存ゾーン**を
-  基準に配置。それ以外の都市は、その都市の拠点座標(`cities.map_x/map_y`)と**同都市の既存ゾーン**
-  だけを基準に`assignNewOrgPosition([cityAnchor, ...sameCityZonePoints])`を呼ぶ（他都市の
-  クラスタとは混ざらず、その都市の近くにまとまって広がっていく）。
+  （`assignNewOrgPosition`と同じ探索アルゴリズム＋開始角度ランダム化をスケールアップしたもの）。
+  **この座標自体は地図上に何かを描画するためのものではない**（従来の単一ランドマーク方式の
+  名残りだが、新規ゾーンの配置基準点としてのみ使う内部値として残した）。
+- `assignZonePositionForCity(city, sameCityZonePoints)`: 組織・施設の座標を決める共通ロジック。
+  **すべての都市（ダイナン市id=1も含めて）** で同じルールを使う: その都市の拠点座標
+  (`cities.map_x/map_y`)+同都市の既存ゾーンだけを基準に`assignNewOrgPosition([cityAnchor,
+  ...sameCityZonePoints])`を呼ぶ（他都市のクラスタとは混ざらず、その都市の近くにまとまって
+  広がっていく）。**以前はダイナン市だけ特別扱いで、全都市を横断した「全ゾーン」を基準に
+  配置していた**ため、他の都市が遠くに追加されるたびにダイナン市側のバウンディングボックスまで
+  無関係に広がってしまう不具合があった。ダイナン市にも`cities.map_x/map_y`の拠点座標
+  (650,430、0005マイグレーションで設定済み)が元々あったため、特別扱いをやめて統一できた。
 - 都市を新規作成すると、この`assignZonePositionForCity`を使って**住宅街+商店街の施設2件が
   自動生成される**（8.3節）。「都市を作ったら地図上にランドマーク1個だけが増える」のではなく、
   最初から複数施設を伴った街並みとして現れる。
@@ -626,10 +646,14 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 （`map.ts`）。マップの拡大・縮小（ホイール/ピンチ）・ドラッグ/スワイプでのパンはSVG要素内に
 スコープされており、ページ全体のスクロール・拡大には影響しない。
 
-`draft`状態の都市に属するゾーンには、SSR時点（`/map`ルート、`index.ts`）で都市一覧から
-`draftCityIds`を計算し、`buildOrgZones`/`buildFacilityZones`へ渡すことで`status: "draft"`が
-付与される。該当ゾーンには「準備中の都市」という文字ラベルが地図上に静的に表示される
-（`map.ts`の`zoneMarkers()`）。都市がActive化されるとこのラベルは次回描画時に消える。
+`draft`状態の都市に属するゾーン（組織・施設）は**マップに一切表示しない**。SSR時点
+（`/map`ルート、`index.ts`）で都市一覧から`draftCityIds`を計算し、`buildOrgZones`/
+`buildFacilityZones`がその時点でフィルタして除外する。`/api/map/people`（動的な人物位置API）
+側でも同様に、draft都市に属する組織・施設・**その都市の住民自身**をレスポンスから除外する
+（都市自体が地図上に存在しない以上、住民だけが中心付近に浮いて表示されるのは不自然なため）。
+**都市を管理画面でActive→draftへ戻した場合も同じ扱いになる**（既存の組織・施設・住民が
+既にあっても、Activeに戻すまで地図上には一切現れない）。以前は「準備中の都市」という文字
+ラベル付きでゾーン自体は表示していたが、今は完全非表示に変更した。
 
 ### 7.3 人物の表示
 
@@ -648,9 +672,9 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 描画する（`computePosition`、経路はゾーングラフ上のBFS最短経路）。`status`が`hospitalized`/`deceased`の
 人物は通勤ロジックより優先して病院/自宅に固定表示される。
 
-組織の`status`が`active`以外（bankrupt等）や、組織・施設が`draft`都市に属する場合、そのゾーンに
-色付きリング（`status-ring`）が表示される。直近ニュースに関係した組織には「注目」の光るリング
-（`spotlight-ring`）も表示される。
+組織の`status`が`active`以外（bankrupt等）の場合、そのゾーンに色付きリング（`status-ring`）が
+表示される（draft都市のゾーンはそもそもマップに存在しないため対象外）。直近ニュースに関係した
+組織には「注目」の光るリング（`spotlight-ring`）も表示される。
 
 ### 7.4 人物検索・フォーカス・選択中インジケーター
 
@@ -720,12 +744,20 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
   施設2件が自動生成される**（`assignZonePositionForCity`を順に呼び、既に置いた施設も基準点に
   含めていくため2件が近接して並ぶ）。単一のランドマークだけで終わらせず、最初から複数施設を
   伴った街並みとして地図に現れる、という7章冒頭の方針転換に対応する変更。
+  **都市削除** (`DELETE /api/admin/cities/:id`): `id=1`（ダイナン市）は削除不可。それ以外も、
+  組織・施設・人物が1件でも紐づいている場合は削除を拒否する（`countCityContents()`で件数を確認、
+  `db/queries.ts`）。city_idはFKのON DELETE CASCADEが無い単なる参照のため、中身が残ったまま
+  削除すると参照切れが起きるための安全策。管理画面では作成を間違えた空の都市を消せる程度の
+  用途を想定している。
 - 施設作成 (`POST /api/admin/facilities`): 名前・種別（`FACILITY_KINDS`）・所在都市・説明を指定。
   座標は`assignZonePositionForCity`で自動決定（都市選択後、その都市に絞り込まれた一覧に反映）。
   **施設編集でも所在都市を変更可能**（企業編集と同じ理由・同じロジックで修正。当初「city_idは
   作成後不変」としていた設計判断を撤回し、都市変更時のみ座標を再計算する方式にした）。
-  **削除エンドポイントは意図的に用意していない**（施設が消えると`assignPersonZones`の
-  自宅/勤務先参照が壊れるため）。
+  **施設削除** (`DELETE /api/admin/facilities/:id`) も可能。当初は「施設が消えると
+  `assignPersonZones`の自宅/勤務先参照が壊れる」という理由で意図的に用意していなかったが、
+  実際にはhomeZone/workZoneは人物テーブルに保存されず**毎リクエスト動的に再計算される**
+  （7.3節）ため、削除しても参照切れは起きず残った施設群へ自然に再分配されるだけと判明し、
+  削除エンドポイントを追加した。
 - 人物作成: 所在都市を選択可能。`origin='admin_manual'`として記録。役職・年収・生年月日・生まれも
   作成時から指定可能（4.1節参照）。職業は8.5節の職業タイプから選択する（未登録の値も保持される）。
 
@@ -802,10 +834,12 @@ AIの出力は信用せず、`validateEventDraft`/`validateNewsDraft`/`validateS
 | GET/PUT | `/api/admin/settings` | 自動配信時刻・天候の取得/自動配信時刻の更新 |
 | PUT | `/api/admin/weather` | 天候の更新 |
 | GET/POST | `/api/admin/cities` | 都市一覧取得 / 新規作成（作成時に住宅街+商店街の施設を自動生成） |
-| PUT | `/api/admin/cities/:id` | 都市の編集（id=1はActive固定） |
+| PUT | `/api/admin/cities/:id` | 都市の編集（id=1はActive固定、所在都市の変更も含む） |
+| DELETE | `/api/admin/cities/:id` | 都市の削除（id=1は不可。組織/施設/人物が0件の都市のみ） |
 | GET | `/api/admin/facilities` | 施設一覧取得（`?cityId=`で都市絞込） |
 | POST | `/api/admin/facilities` | 施設の新規作成 |
-| PUT | `/api/admin/facilities/:id` | 施設の編集（名前/種別/説明のみ。削除エンドポイントなし） |
+| PUT | `/api/admin/facilities/:id` | 施設の編集（所在都市の変更も含む） |
+| DELETE | `/api/admin/facilities/:id` | 施設の削除 |
 | GET | `/api/admin/news-list` | ニュース一覧（簡易） |
 | GET/PUT/DELETE | `/api/admin/news/:id` | 記事の取得/編集/**削除** |
 | POST | `/api/admin/news/generate` | AI補助でのニュース新規作成 |
@@ -887,8 +921,13 @@ TypeScriptのコンパイル（`tsc --noEmit`）は文字列配列の中身ま�
    （このセッションで使った手法。`export const X = [...]; module.exports = X.join("\n")`のように
    一時ファイル化して検証する）
 3. SVGを触った場合はタグの開閉バランスをスクリプトでチェック（引用符を考慮したタグトークナイザ）
-4. `wrangler dev --local` でローカルDBに対して実際にAPIを叩いて確認（Workers AIだけはローカルでは
-   動かないため、AI関連は本番 or `--remote` で確認）
+4. `wrangler dev`（`npm run dev`、`--local`を付けない）でローカルDBに対して実際にAPIを叩いて確認。
+   AI関連の動作確認は`--local`を付けずに起動すること。**`--local`付きで起動するとAIバインディングが
+   `Binding AI needs to be run remotely`で常に失敗し、シミュレーションが毎回フォールバック
+   テンプレートに落ちてしまう**（実際に踏んだ不具合）。`wrangler.jsonc`の`ai`バインディングに
+   `remote: true`を付けても、`--local`フラグそのものがそれを上書きしてしまうため無意味。
+   D1はバインディング側の設定通りローカルシミュレーションのまま、AIだけリモートに繋がる
+   「（`--local`を付けない）通常のwrangler dev」が正しい組み合わせ。
 
 ---
 
@@ -915,7 +954,8 @@ TypeScriptのコンパイル（`tsc --noEmit`）は文字列配列の中身ま�
 | 名前 | 種類 | 対象 |
 |---|---|---|
 | `DB` | D1 Database | `odorokinews-db`（database_id は `wrangler.jsonc` 参照） |
-| `AI` | Workers AI | 常にリモート実行 |
+| `AI` | Workers AI | 常にリモート実行（`wrangler.jsonc`で`remote: true`を明示。ただし`wrangler dev --local`では
+  このフラグごと無視され動かない、10.2節参照） |
 | `assets` | 静的アセット | `public/`配下（現状`og-image.png`のみ、10.1節） |
 
 Cronトリガー: `*/10 * * * *`（実際の配信頻度はDB側の`world.auto_publish_times`で管理、5.2節参照）+
@@ -953,13 +993,14 @@ npm run tail
 
 ## 13. 既知の制約・スコープ外
 
-- Workers AIはローカル開発では実行不可（常にリモート）。
+- Workers AIはローカル開発では実行不可（常にリモート。`--local`付きの`wrangler dev`では動かない、
+  10.2節末尾の注意点を参照）。
 - 都市を新規作成すると住宅街+商店街の施設は自動生成されるが（7.2節・8.3節）、組織・人物は
   自動生成されない（手動追加 or AIのnew_people/new_organizations頼み）。将来的に
   「都市ごとのより充実した初期シード生成」を作る余地がある。
 - ニュース削除は世界状態のロールバックを行わない（意図的な設計、8.2節）。
-- 施設に削除エンドポイントが無い（意図的な設計、8.3節。`assignPersonZones`の自宅/勤務先参照が
-  壊れるため）。作成を間違えた場合は種別・説明の編集で対応する運用を想定している。
+- 都市削除は組織・施設・人物が1件も無い場合のみ可能（8.3節）。中身のある都市を丸ごと削除する
+  機能は無い（安全側に倒した設計。city_idにON DELETE CASCADEは無いため）。
 - `relationships`（人間関係）は管理画面から手動で追加・出産記録経由で自動追加できるが、
   シミュレーション（AIのイベント生成）が自動で関係を追加する機能はまだ無い。
   家系図表示も直接の関係（親・子・兄弟姉妹・配偶者）のみで、祖父母・孫までは辿らない。
@@ -1085,3 +1126,17 @@ Bearerトークンでは投稿できない）。外部OAuthライブラリは使
   (`public/og-image.png`、1200x630)はSVG+`@resvg/resvg-js`で一度だけ生成しリポジトリにコミット。
   配信は`wrangler.jsonc`に追加した`assets.directory`（Honoを経由しない静的配信）で行う。
   ニュース詳細・人物詳細ページは記事本文/プロフィールの先頭行を`og:description`に使う。
+- 2026-08-25: 天候をイベントAIにも管理させるように変更（6.2節。管理画面からの手動更新と共存）。
+  地図の配置アルゴリズムが「新規ゾーンが常に右方向へしか伸びない」実際の不具合を修正
+  （`assignNewOrgPosition`/`assignNewCityPosition`の探索開始角度を毎回ランダム化）、加えて
+  ダイナン市だけ全都市横断のバウンディングボックスを基準にしていた特別扱いを撤廃し、
+  全都市で統一ロジックにした（7.2節）。都市・施設の削除を管理画面から可能に
+  （都市は中身が0件の場合のみ、施設は無条件。8.3節・9章）。draft状態の都市は組織・施設・住民ごと
+  マップから完全に非表示にするよう変更（以前は「準備中の都市」ラベル付きで表示していた。
+  Active⇄draftの切り替え時も同様に反映される。7.2節・7.3節）。記事本文が短くなりすぎる問題に
+  対応するため、記者AIプロンプトへ最低150文字の明記とユーモア強化の指示を追加し、
+  さらに`padShortArticleBody()`（`fallback.ts`）で全経路共通の機械的な安全策を追加した
+  （6.3節）。あわせて、ローカル開発で`wrangler dev --local`だとAIバインディングが常に失敗する
+  （フォールバックへ毎回落ちる）不具合を発見し、`wrangler.jsonc`の`ai`バインディングに
+  `remote: true`を追加。ただし`--local`フラグ自体がこれを上書きするため、AI関連の動作確認は
+  `--local`を付けずに`wrangler dev`を起動すること（10.2節に教訓を記載）。

@@ -1,4 +1,4 @@
-import { ORG_STATUSES, PERSON_STATUSES } from "../constants";
+import { ORG_STATUSES, PERSON_STATUSES, WEATHER_CONDITIONS } from "../constants";
 import type { EventRow, OrganizationRow, PersonRow } from "../types";
 
 export interface EventHints {
@@ -44,7 +44,11 @@ const EVENT_SYSTEM_PROMPT = `あなたは架空世界シミュレーションの
 - 出来事によって関係する人物の状態（負傷・入院・死亡・称賛される等）、企業の状態
   （調査中・拡大中・回復中等）、あるいは株価に明確に影響が出るなら、
   それを state_changes として必ず反映すること。「反映しなくていい理由がない限り」
-  空配列にはしないこと。世界の状態とニュースの内容が食い違うことは許されない。`;
+  空配列にはしないこと。世界の状態とニュースの内容が食い違うことは許されない。
+- weatherフィールドで、次に世界へ反映する天候を1つ選ぶこと。基本は現在の天候を維持し、
+  季節感や出来事の内容に照らして自然な場合のみ変える。晴れ→曇り→雨のように段階を踏んだ
+  推移を優先し、晴れから吹雪へ一気に飛ぶような不自然な急変は避けること（ただし出来事自体が
+  天候にまつわる魔法現象などの場合はその限りではない）。`;
 
 export function buildEventPrompt(ctx: WorldContext): { system: string; user: string } {
   const orgById = new Map(ctx.organizations.map((o) => [o.id, o]));
@@ -132,6 +136,7 @@ ${lastEventOrgNames.length ? `\n直前のイベントは${lastEventOrgNames.join
   "related_organizations": [ 上記一覧に存在するid の配列 ],
   "new_organizations": [ {"name": "string", "kind": "company|government|school|other", "industry": "stringまたはnull", "city_id": ${ctx.cityId}} ]（任意、無ければ空配列）,
   "new_facilities": [ {"name": "string", "kind": "residential|university|park|shopping_street|other", "city_id": ${ctx.cityId}} ]（任意、無ければ空配列）,
+  "weather": "${WEATHER_CONDITIONS.join("|")}"（次に世界へ反映する天候。変える必要が無ければ現在と同じ値でよい）,
   "state_changes": [
     {"type": "person_status", "target_id": 数値, "value": "${PERSON_STATUSES.join("|")}"},
     {"type": "organization_status", "target_id": 数値, "value": "${ORG_STATUSES.join("|")}"},
@@ -156,11 +161,15 @@ const NEWS_SYSTEM_PROMPT = `あなたは架空世界の報道機関「モーゼ�
   出すための誇張した言い回し・比喩・住民や関係者のコメント風の一言などは、新しい「事実」を
   捏造しない範囲で自由に加えてよい。
 - 世界観上のギャグ要素（魔法や幽霊など）は特別視せず通常の社会的出来事として報道しつつ、
-  語り口はできるだけ愉快に、時にはかなり突飛な例え・大げさな表現を使ってよい。ただし負傷・死亡
-  など深刻な内容を扱う場合は、当人や被害者を茶化すような不謹慎な表現は避けること（周辺のリアク
-  ションやディテールで笑いを取るのは構わない）。
+  語り口はできるだけ愉快に、時にはかなり突飛な例え・大げさな表現を使ってよい。生真面目で
+  淡々とした記事にはしないこと。ユーモアは控えめにするより、むしろ足りないくらいなら
+  もっと盛り込むつもりで書くこと。ただし負傷・死亡など深刻な内容を扱う場合は、当人や被害者を
+  茶化すような不謹慎な表現は避けること（周辺のリアクションやディテールで笑いを取るのは構わない）。
 - 出力は指定されたJSON形式のみ。説明文やMarkdownのコードフェンスは一切付けない。
-- body はこれまでよりやや長めの5〜7段落程度の日本語の文章にすること（改行は\\nで表現してよい）。`;
+- body は5〜7段落程度の日本語の文章にすること（改行は\\nで表現してよい）。**本文は必ず
+  150文字以上**書くこと。事実を水増しする必要はなく、比喩・関係者コメント・周辺描写・
+  ちょっとした余談を加えて自然に厚みを持たせること。短すぎる記事（1〜2文で終わるもの）は
+  不可。`;
 
 export function buildNewsPrompt(
   ctx: { cityName: string; targetDate: string },

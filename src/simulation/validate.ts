@@ -2,7 +2,7 @@
 // 「存在しない人物/企業の参照」「固定設定の変更」などを検出し、
 // 不正な部分だけを取り除いて安全な構造化データにする（docs.md 21章）。
 
-import { FACILITY_KINDS, NEWS_CATEGORIES, ORG_KINDS, ORG_STATUSES, PERSON_STATUSES } from "../constants";
+import { FACILITY_KINDS, NEWS_CATEGORIES, ORG_KINDS, ORG_STATUSES, PERSON_STATUSES, WEATHER_CONDITIONS } from "../constants";
 
 export interface NewPersonDraft {
   name: string;
@@ -46,6 +46,7 @@ export interface ValidatedEventDraft {
   related_organization_ids: number[];
   new_organizations: NewOrganizationDraft[];
   new_facilities: NewFacilityDraft[];
+  weather: string | null;
   state_changes: StateChange[];
 }
 
@@ -63,6 +64,7 @@ const ALLOWED_STATUS = new Set<string>(PERSON_STATUSES);
 const ALLOWED_ORG_STATUS = new Set<string>(ORG_STATUSES);
 const ALLOWED_ORG_KINDS = new Set<string>(ORG_KINDS);
 const ALLOWED_FACILITY_KINDS = new Set<string>(FACILITY_KINDS);
+const ALLOWED_WEATHER = new Set<string>(WEATHER_CONDITIONS);
 
 function cleanText(v: unknown, max: number): string {
   if (typeof v !== "string") return "";
@@ -207,6 +209,9 @@ export function validateEventDraft(
     new Set(relatedPersonIds)
   );
 
+  const weatherRaw = cleanText(obj.weather, 20);
+  const weather = ALLOWED_WEATHER.has(weatherRaw) ? weatherRaw : null;
+
   return {
     event_type: eventType,
     summary,
@@ -217,6 +222,7 @@ export function validateEventDraft(
     related_organization_ids: relatedOrgIds,
     new_organizations: newOrganizations,
     new_facilities: newFacilities,
+    weather,
     state_changes: stateChanges,
   };
 }
