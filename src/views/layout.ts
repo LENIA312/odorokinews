@@ -1,4 +1,5 @@
 import { html, raw, RawHtml } from "../utils/html";
+import { formatWorldDateWithWeekdayJa } from "../utils/date";
 
 const NAV_ITEMS = [
   { href: "/news", label: "ニュース" },
@@ -76,19 +77,24 @@ const STYLE = `
     padding: 1.6rem 1.2rem 4rem;
   }
 
-  .worldbar {
+  .mosen-clock {
+    max-width: 880px;
+    margin: 0.5rem auto 0;
+    padding: 0.5rem 1.2rem 0.7rem;
+    text-align: center;
     font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
-    font-size: 0.78rem;
+  }
+  .mosen-clock .clock-label {
+    font-size: 0.62rem;
+    letter-spacing: 0.2em;
     color: var(--ink-soft);
-    background: var(--paper);
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    padding: 0.5rem 0.8rem;
-    margin-bottom: 1.4rem;
-    display: flex;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 0.4rem;
+  }
+  .mosen-clock .clock-date {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+    margin-top: 0.1rem;
   }
 
   h2.section-title {
@@ -257,11 +263,39 @@ const STYLE = `
   }
 `;
 
-export function page(opts: { title: string; activePath: string; worldbar?: RawHtml; body: RawHtml }): RawHtml {
+// ヘッダーの時計は表示のたびに/api/healthへ軽くポーリングし、日付が進んでいれば
+// 自動的に表示を更新する（ページ再読み込み不要）。
+const CLOCK_SCRIPT = [
+  "(function () {",
+  "  var el = document.getElementById('mosenClockDate');",
+  "  if (!el) return;",
+  "  var WEEKDAY = ['日','月','火','水','木','金','土'];",
+  "  function format(dateStr) {",
+  "    var parts = dateStr.split('-').map(Number);",
+  "    var wd = WEEKDAY[new Date(Date.UTC(parts[0], parts[1] - 1, parts[2])).getUTCDay()];",
+  "    return parts[0] + '年' + parts[1] + '月' + parts[2] + '日（' + wd + '）';",
+  "  }",
+  "  function poll() {",
+  "    fetch('/api/health').then(function (res) { return res.json(); }).then(function (data) {",
+  "      if (data && data.worldDate) el.textContent = format(data.worldDate);",
+  "    }).catch(function () {});",
+  "  }",
+  "  setInterval(poll, 180000);",
+  "})();",
+].join("\n");
+
+export function page(opts: { title: string; activePath: string; worldDate?: string; body: RawHtml }): RawHtml {
   const nav = NAV_ITEMS.map(
     (item) =>
       html`<a href="${item.href}" class="${item.href === opts.activePath ? "active" : ""}">${item.label}</a>`.value
   ).join("");
+
+  const clock = opts.worldDate
+    ? html`<div class="mosen-clock">
+        <div class="clock-label">MOSE'N UNGRA</div>
+        <div class="clock-date" id="mosenClockDate">${formatWorldDateWithWeekdayJa(opts.worldDate)}</div>
+      </div>`
+    : raw("");
 
   return html`<!doctype html>
 <html lang="ja">
@@ -279,15 +313,16 @@ export function page(opts: { title: string; activePath: string; worldbar?: RawHt
       <h1><a href="/" style="color:inherit">モーゼン・クロニクル</a></h1>
       <div class="sub">架空世界「モーゼン・アングラ」で実際に起きた出来事を報じる</div>
     </div>
+    ${clock}
     <nav class="site">${raw(nav)}</nav>
   </header>
   <main>
-    ${opts.worldbar ?? raw("")}
     ${opts.body}
   </main>
   <footer class="site">
-    モーゼン・クロニクルは架空世界シミュレーションシステムです。登場する人物・企業・出来事はすべて架空であり、実在するものとは関係ありません。
+    モーゼン・クロニクルは架空世界「モーゼン・アングラ」の出来事を伝えるニュースサイトです。登場する人物・企業・出来事はすべて架空であり、実在するものとは関係ありません。
   </footer>
+  <script>${raw(CLOCK_SCRIPT)}</script>
 </body>
 </html>`;
 }

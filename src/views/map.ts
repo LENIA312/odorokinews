@@ -222,11 +222,6 @@ export function mapView(): RawHtml {
   const edgesJson = JSON.stringify(ROAD_EDGES.map((e) => [e[0], e[1]])).replace(/</g, "\\u003c");
 
   return html`<h2 class="section-title">街の様子</h2>
-    <div class="empty" style="text-align:left;padding:0 0 1rem">
-      職業・勤務先から自動的に「自宅」と「主な行き先」を割り当て、道路網に沿って移動する様子を
-      模式的に表示しています。実際の行動記録ではなく、演出用のイメージです。拡大・縮小や
-      ドラッグで表示範囲を動かせます。
-    </div>
     <style>${raw(STYLE_EXTRA)}</style>
     <div id="clock">読み込み中...</div>
     <div id="spotlight"></div>
@@ -474,8 +469,7 @@ const CLIENT_SCRIPT = [
   "    var hour = (nowSec % DAY_SECONDS) / DAY_SECONDS * 24;",
   "    var h = Math.floor(hour);",
   "    var m = Math.floor((hour - h) * 60);",
-  "    document.getElementById('clock').textContent =",
-  "      'シミュレーション時刻: ' + pad(h) + ':' + pad(m) + '（現実の1時間で1日が経過する早回し表示）';",
+  "    document.getElementById('clock').textContent = '現在時刻: ' + pad(h) + ':' + pad(m);",
   "",
   "    for (var i = 0; i < people.length; i++) {",
   "      var p = people[i];",

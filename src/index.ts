@@ -33,7 +33,6 @@ import {
 import { html } from "./utils/html";
 import { NEWS_CATEGORIES, ORG_STATUSES, PERSON_STATUSES } from "./constants";
 import { page } from "./views/layout";
-import { worldbar } from "./views/components";
 import { newsListSection, categoryTabs } from "./views/newsList";
 import { newsDetailView } from "./views/newsDetail";
 import { worldView } from "./views/world";
@@ -60,7 +59,7 @@ app.get("/", async (c) => {
     page({
       title: "トップ",
       activePath: "/",
-      worldbar: worldbar(world),
+      worldDate: world.current_date,
       body: newsListSection("最新ニュース", news.results ?? []),
     }).value
   );
@@ -77,7 +76,7 @@ app.get("/news", async (c) => {
     page({
       title: category ? `ニュース - ${category}` : "ニュース一覧",
       activePath: "/news",
-      worldbar: world ? worldbar(world) : undefined,
+      worldDate: world?.current_date,
       body: html`${categoryTabs(category)}${newsListSection(category ?? "すべてのニュース", news.results ?? [])}`,
     }).value
   );
@@ -108,7 +107,7 @@ app.get("/news/:id", async (c) => {
     page({
       title: news.title,
       activePath: "/news",
-      worldbar: world ? worldbar(world) : undefined,
+      worldDate: world?.current_date,
       body: newsDetailView(news, city?.name ?? null, relatedPeople, relatedOrgs),
     }).value
   );
@@ -123,7 +122,7 @@ app.get("/world", async (c) => {
     page({
       title: "世界について",
       activePath: "/world",
-      worldbar: worldbar(world),
+      worldDate: world.current_date,
       body: worldView(world, cities.results ?? []),
     }).value
   );
@@ -138,7 +137,7 @@ app.get("/people", async (c) => {
     page({
       title: "人物",
       activePath: "/people",
-      worldbar: world ? worldbar(world) : undefined,
+      worldDate: world?.current_date,
       body: peopleListView(people.results ?? [], orgById),
     }).value
   );
@@ -170,7 +169,7 @@ app.get("/people/:id", async (c) => {
     page({
       title: person.name,
       activePath: "/people",
-      worldbar: world ? worldbar(world) : undefined,
+      worldDate: world?.current_date,
       body: personDetailView(person, organization, relationships, relatedNews),
     }).value
   );
@@ -183,7 +182,7 @@ app.get("/timeline", async (c) => {
     page({
       title: "年表",
       activePath: "/timeline",
-      worldbar: world ? worldbar(world) : undefined,
+      worldDate: world?.current_date,
       body: timelineView(items.results ?? []),
     }).value
   );
@@ -207,7 +206,7 @@ app.get("/economy", async (c) => {
     page({
       title: "経済",
       activePath: "/economy",
-      worldbar: world ? worldbar(world) : undefined,
+      worldDate: world?.current_date,
       body: economyView(orgs.results ?? [], latestByOrg, priceIndex),
     }).value
   );
@@ -219,7 +218,7 @@ app.get("/map", async (c) => {
     page({
       title: "街の様子",
       activePath: "/map",
-      worldbar: world ? worldbar(world) : undefined,
+      worldDate: world?.current_date,
       body: mapView(),
     }).value
   );

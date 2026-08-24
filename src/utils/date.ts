@@ -12,6 +12,14 @@ export function formatWorldDateJa(dateStr: string): string {
   return `${y}年${m}月${d}日`;
 }
 
+const WEEKDAY_JA = ["日", "月", "火", "水", "木", "金", "土"];
+
+export function formatWorldDateWithWeekdayJa(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const weekday = WEEKDAY_JA[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+  return `${y}年${m}月${d}日（${weekday}）`;
+}
+
 export function formatDateTimeJa(isoStr: string): string {
   const dt = new Date(isoStr);
   if (Number.isNaN(dt.getTime())) return isoStr;
